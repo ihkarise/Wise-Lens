@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Wise Lens · Intake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+/* ============ Wise brand tokens ============ */
+:root{
+  --wh-blue:#2A3C78; --wh-red:#C21F35; --navy:#132A5C;
+  --ink:#1b2440; --muted:#717a93; --faint:#9aa2b8;
+  --line:#e5e8f1; --bg:#f4f6fb; --card:#ffffff; --field:#fafbff;
+  --ok:#13935a; --ok-bg:#e7f5ed; --warn:#c07d00; --warn-bg:#fdf3e0;
+  --bad:#C21F35; --bad-bg:#fbe9ec; --info-bg:#eef1fb;
+  --shadow:0 1px 2px rgba(19,42,92,.06),0 8px 24px rgba(19,42,92,.06);
+  --r:14px; --r-sm:10px;
+  --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  font-family:'Inter',system-ui,sans-serif;color:var(--ink);background:var(--bg);
+  font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{font-family:'Poppins',sans-serif;font-weight:600;margin:0;letter-spacing:-.01em}
+.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
+button{font-family:inherit;cursor:pointer;border:none;background:none}
+input,select{font-family:inherit;font-size:15px}
+img{display:block;max-width:100%}
+
+/* ============ shell ============ */
+.app{max-width:620px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;background:var(--bg)}
+.topbar{
+  position:sticky;top:0;z-index:30;background:var(--wh-blue);color:#fff;
+  padding:calc(var(--safe-t) + 12px) 18px 12px;display:flex;align-items:center;gap:12px;
+  box-shadow:0 2px 10px rgba(19,42,92,.18);
+}
+.logo{width:34px;height:34px;border-radius:9px;background:#fff;display:grid;place-items:center;flex:0 0 auto}
+.logo svg{width:22px;height:22px}
+.brand .t{font-family:'Poppins';font-weight:600;font-size:16px;line-height:1.05}
+.brand .s{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#b9c2e6}
+.topbar .spacer{flex:1}
+.iconbtn{width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.12);color:#fff;display:grid;place-items:center}
+.iconbtn:active{background:rgba(255,255,255,.22)}
+.iconbtn svg{width:20px;height:20px}
+.demo-pill{font-size:10.5px;font-weight:600;letter-spacing:.1em;background:var(--wh-red);color:#fff;padding:4px 8px;border-radius:999px}
+
+main{flex:1;padding:18px 16px 130px}
+.section-eyebrow{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 2px 10px}
+
+/* ============ stepper ============ */
+.steps{display:flex;gap:6px;padding:14px 16px 0}
+.step{flex:1;height:4px;border-radius:3px;background:var(--line);transition:background .3s}
+.step.on{background:var(--wh-blue)}
+.step.done{background:var(--ok)}
+
+/* ============ capture ============ */
+.hero{text-align:center;padding:14px 8px 22px}
+.hero h1{font-size:23px;line-height:1.15}
+.hero p{color:var(--muted);margin:8px auto 0;max-width:30ch;font-size:14px}
+.cap-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px}
+.cap-card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px 14px;
+  text-align:center;box-shadow:var(--shadow);transition:transform .12s,border-color .12s;position:relative;overflow:hidden
+}
+.cap-card:active{transform:scale(.975)}
+.cap-card .ic{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;margin:0 auto 10px}
+.cap-card.bill .ic{background:var(--info-bg);color:var(--wh-blue)}
+.cap-card.cover .ic{background:var(--bad-bg);color:var(--wh-red)}
+.cap-card .ic svg{width:26px;height:26px}
+.cap-card h3{font-size:15px}
+.cap-card .sub{font-size:12px;color:var(--muted);margin-top:3px}
+.cap-card input{position:absolute;inset:0;opacity:0;cursor:pointer}
+
+.queue{margin-top:20px;display:flex;flex-direction:column;gap:10px}
+.shot{
+  display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:8px;box-shadow:var(--shadow)
+}
+.shot img{width:48px;height:48px;border-radius:8px;object-fit:cover;flex:0 0 auto;background:var(--field)}
+.shot .meta{flex:1;min-width:0}
+.shot .nm{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shot .tag{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.shot .tag.bill{color:var(--wh-blue)}
+.shot .tag.cover{color:var(--wh-red)}
+.shot .x{width:32px;height:32px;border-radius:8px;color:var(--muted);display:grid;place-items:center;flex:0 0 auto}
+.shot .x:active{background:var(--bg)}
+.shot .x svg{width:18px;height:18px}
+
+/* ============ buttons ============ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  font-weight:600;font-size:15px;border-radius:12px;padding:14px 18px;width:100%;
+  background:var(--wh-blue);color:#fff;transition:filter .12s,transform .12s
+}
+.btn:active{transform:scale(.985);filter:brightness(.94)}
+.btn[disabled]{opacity:.45;pointer-events:none}
+.btn.ghost{background:transparent;color:var(--wh-blue);border:1.5px solid var(--line)}
+.btn.red{background:var(--wh-red)}
+.btn svg{width:18px;height:18px}
+
+/* sticky bottom bar */
+.dock{
+  position:fixed;left:0;right:0;bottom:0;z-index:25;
+  padding:12px 16px calc(var(--safe-b) + 12px);
+  background:linear-gradient(180deg,rgba(244,246,251,0) 0%,var(--bg) 28%);
+}
+.dock-inner{max-width:620px;margin:0 auto;display:flex;gap:10px;align-items:center}
+.dock .count{flex:0 0 auto;font-size:12.5px;color:var(--muted);font-weight:500}
+
+/* ============ processing ============ */
+.proc{padding:40px 12px;text-align:center}
+.spin{width:46px;height:46px;border-radius:50%;border:3.5px solid var(--line);border-top-color:var(--wh-blue);margin:0 auto 18px;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.proc p{color:var(--muted);font-size:14px}
+.proc .now{font-weight:600;color:var(--ink)}
+
+/* ============ review ============ */
+.summary{
+  display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap
+}
+.chip-stat{
+  flex:1;min-width:88px;background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:10px 12px;box-shadow:var(--shadow)
+}
+.chip-stat .n{font-family:'JetBrains Mono';font-weight:600;font-size:20px;line-height:1}
+.chip-stat .l{font-size:11px;color:var(--muted);margin-top:3px}
+.chip-stat.rec .n{color:var(--ok)}
+.chip-stat.add .n{color:var(--wh-blue)}
+.chip-stat.skip .n{color:var(--faint)}
+
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);margin-bottom:12px;
+  box-shadow:var(--shadow);overflow:hidden;border-left:4px solid var(--line)
+}
+.card.ok{border-left-color:var(--ok)}
+.card.warn{border-left-color:var(--warn)}
+.card.bad{border-left-color:var(--bad)}
+.card.skipped{opacity:.55}
+.card-head{padding:13px 14px;display:flex;gap:10px;align-items:flex-start}
+.card-head .grow{flex:1;min-width:0}
+.card .name{font-family:'Poppins';font-weight:600;font-size:15.5px;line-height:1.2;width:100%;
+  border:none;background:transparent;color:var(--ink);padding:0}
+.card .name:focus{outline:none;background:var(--field);border-radius:6px;padding:2px 4px;margin:-2px -4px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.chip{font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;letter-spacing:.02em;display:inline-flex;align-items:center;gap:4px}
+.chip.match{background:var(--ok-bg);color:var(--ok)}
+.chip.new{background:var(--info-bg);color:var(--wh-blue)}
+.chip.origin{background:var(--bg);color:var(--muted)}
+.chip.lowconf{background:var(--warn-bg);color:var(--warn)}
+.chip .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.caret{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--faint);flex:0 0 auto;transition:transform .2s}
+.card.open .caret{transform:rotate(180deg)}
+.caret svg{width:18px;height:18px}
+
+.card-glance{padding:0 14px 13px;display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.card-glance b{color:var(--ink);font-family:'JetBrains Mono';font-weight:600}
+
+.card-body{display:none;padding:4px 14px 14px;border-top:1px solid var(--line)}
+.card.open .card-body{display:block}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;margin-top:12px}
+.f{display:flex;flex-direction:column;gap:4px}
+.f.wide{grid-column:1/-1}
+.f label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--faint)}
+.f input{background:var(--field);border:1px solid var(--line);border-radius:8px;padding:9px 10px;color:var(--ink)}
+.f input:focus{outline:none;border-color:var(--wh-blue);background:#fff}
+.f input.mono{font-family:'JetBrains Mono'}
+.f input[readonly]{color:var(--muted);background:#f1f2f7;border-style:dashed}
+.f .hint{font-size:10.5px;color:var(--faint)}
+
+.actions{display:flex;gap:6px;margin-top:14px;background:var(--bg);padding:4px;border-radius:11px}
+.actions button{flex:1;padding:9px 4px;border-radius:8px;font-size:12.5px;font-weight:600;color:var(--muted);transition:.12s}
+.actions button.sel.rec{background:var(--ok);color:#fff}
+.actions button.sel.add{background:var(--wh-blue);color:#fff}
+.actions button.sel.skip{background:var(--faint);color:#fff}
+
+/* ============ done ============ */
+.done{padding:46px 18px;text-align:center}
+.done .seal{width:72px;height:72px;border-radius:50%;background:var(--ok-bg);color:var(--ok);display:grid;place-items:center;margin:0 auto 18px}
+.done .seal svg{width:38px;height:38px}
+.done h2{font-size:21px}
+.done p{color:var(--muted);margin-top:8px}
+.recap{margin:22px auto 0;max-width:340px;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:6px 16px;box-shadow:var(--shadow)}
+.recap .row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line);font-size:14px}
+.recap .row:last-child{border-bottom:none}
+.recap .row b{font-family:'JetBrains Mono'}
+
+/* ============ sheet (settings) ============ */
+.scrim{position:fixed;inset:0;background:rgba(19,42,92,.4);z-index:40;display:none}
+.scrim.on{display:block}
+.sheet{
+  position:fixed;left:0;right:0;bottom:0;z-index:41;background:#fff;border-radius:20px 20px 0 0;
+  padding:8px 18px calc(var(--safe-b) + 22px);max-width:620px;margin:0 auto;transform:translateY(100%);
+  transition:transform .26s cubic-bezier(.4,0,.2,1);max-height:86dvh;overflow:auto
+}
+.sheet.on{transform:translateY(0)}
+.grab{width:40px;height:4px;border-radius:3px;background:var(--line);margin:8px auto 16px}
+.sheet h3{font-size:17px;margin-bottom:4px}
+.sheet .desc{font-size:13px;color:var(--muted);margin-bottom:16px}
+.field-row{margin-bottom:14px}
+.field-row label{display:block;font-size:12px;font-weight:600;color:var(--ink);margin-bottom:6px}
+.field-row input{width:100%;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+.field-row .help{font-size:11px;color:var(--faint);margin-top:5px}
+.toggle{display:flex;align-items:center;justify-content:space-between;padding:12px 0}
+.switch{width:46px;height:27px;border-radius:999px;background:var(--line);position:relative;transition:.18s;flex:0 0 auto}
+.switch.on{background:var(--ok)}
+.switch i{position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;background:#fff;transition:.18s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.switch.on i{left:22px}
+
+.toast{
+  position:fixed;left:50%;bottom:calc(var(--safe-b) + 96px);transform:translateX(-50%) translateY(20px);
+  background:var(--navy);color:#fff;font-size:13.5px;font-weight:500;padding:11px 18px;border-radius:999px;
+  z-index:50;opacity:0;pointer-events:none;transition:.25s;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:88vw;text-align:center
+}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.hidden{display:none!important}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+:focus-visible{outline:2px solid var(--wh-blue);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.5" stroke="#2A3C78" stroke-width="2.2"/><path d="M16 16l4.5 4.5" stroke="#C21F35" stroke-width="2.6" stroke-linecap="round"/></svg>
+    </div>
+    <div class="brand">
+      <div class="t">Wise Lens</div>
+      <div class="s">Intake</div>
+    </div>
+    <div class="spacer"></div>
+    <span id="demoPill" class="demo-pill">DEMO</span>
+    <button class="iconbtn" id="openSettings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </header>
+
+  <div class="steps">
+    <div class="step on" data-step="1"></div>
+    <div class="step" data-step="2"></div>
+    <div class="step" data-step="3"></div>
+  </div>
+
+  <main id="main"></main>
+</div>
+
+<div class="dock" id="dock"></div>
+
+<!-- settings sheet -->
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet">
+  <div class="grab"></div>
+  <h3>Settings</h3>
+  <p class="desc">Connect Lens to your WHIMS backend. Leave blank to explore in demo mode with sample data.</p>
+  <div class="field-row">
+    <label for="execUrl">Apps Script Web App URL</label>
+    <input id="execUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" spellcheck="false">
+    <div class="help">Your WHIMS /exec endpoint. Sign in with staff credentials after saving.</div>
+  </div>
+  <div class="field-row" id="acctRow" style="display:none">
+    <label>Account</label>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+      <span id="acctWho" style="font-size:14px;font-weight:600"></span>
+      <button class="btn ghost" id="signOut" style="width:auto;padding:8px 14px;font-size:13px">Sign out</button>
+    </div>
+  </div>
+  <div class="toggle">
+    <div><div style="font-weight:600;font-size:14px">Force demo mode</div><div style="font-size:12px;color:var(--muted)">Use built-in sample bill and covers</div></div>
+    <div class="switch" id="demoSwitch"><i></i></div>
+  </div>
+  <button class="btn" id="saveSettings" style="margin-top:10px">Save</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ===================================================================
+   WISE LENS — Phase 1 frontend
+   Capture → AI extract → reconcile (bill↔cover) → review → stage to WHIMS
+   Single-file. Backend contract (Apps Script, text/plain POST):
+     {action:'extract',   token, kind:'bill'|'cover', image:<base64>, mime} -> structured object
+     {action:'inventory', token} -> {ok, items:[{id,name,pack,potency,category}]}
+     {action:'stageIntake', token, rows:[...]} -> {ok, staged:n}
+   =================================================================== */
+
+/* ---- config / persistence (localStorage key: wiseLens1) ---- */
+const LS_KEY = 'wiseLens1';
+const DEFAULTS = {
+  // Hardcode the deployed /exec here once Code.gs is live (staff devices skip setup):
+  execUrl: '',
+  token: '',           // WHIMS session token (from login), not a static secret
+  user: '',
+  forceDemo: false,
+};
+let CFG = loadCfg();
+function loadCfg(){ try{ return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(LS_KEY)||'{}')); }catch(e){ return {...DEFAULTS}; } }
+function saveCfg(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(CFG)); }catch(e){} }
+function isDemo(){ return CFG.forceDemo || !CFG.execUrl; }
+function needsLogin(){ return !isDemo() && !CFG.token; }    // live backend but no session yet
+function clearSession(){ CFG.token=''; CFG.user=''; saveCfg(); }
+
+/* ---- app state ---- */
+const S = {
+  screen:'capture',     // capture | processing | review | done
+  shots:[],             // {id, kind:'bill'|'cover', dataUrl, name}
+  rows:[],              // reconciled review rows
+  inventory:null,       // cached inventory snapshot
+  procText:'',
+};
+let _id=0; const uid=p=>`${p}${(++_id).toString(36)}${Date.now().toString(36).slice(-3)}`;
+
+/* ===================================================================
+   1. CAPTURE
+   =================================================================== */
+function addShots(kind, files){
+  const list=[...files];
+  let pending=list.length;
+  if(!pending) return;
+  list.forEach(file=>{
+    downscale(file, 1600, 0.82).then(dataUrl=>{
+      S.shots.push({ id:uid('s'), kind, dataUrl, name:file.name||`${kind} photo` });
+      if(--pending===0) render();
+    }).catch(()=>{ if(--pending===0) render(); });
+  });
+}
+function downscale(file, max, q){
+  return new Promise((res,rej)=>{
+    const img=new Image(); const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      let{width:w,height:h}=img;
+      const scale=Math.min(1, max/Math.max(w,h));
+      w=Math.round(w*scale); h=Math.round(h*scale);
+      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', q));
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); rej(); };
+    img.src=url;
+  });
+}
+
+/* ===================================================================
+   2. EXTRACT + RECONCILE
+   =================================================================== */
+async function runExtract(){
+  S.screen='processing'; render();
+  let extractions=[];
+  try{
+    // inventory first (for matching) — cached for the session
+    S.procText='Loading inventory…';
+    paintProc();
+    S.inventory = await getInventory();
+
+    for(let i=0;i<S.shots.length;i++){
+      const sh=S.shots[i];
+      S.procText=`Reading ${sh.kind} ${i+1} of ${S.shots.length}…`;
+      paintProc();
+      const data = await extractOne(sh);
+      extractions.push({kind:sh.kind, data});
+    }
+    S.rows = reconcile(extractions, S.inventory);
+    S.screen='review'; render();
+  }catch(err){
+    S.screen='capture'; render();
+    toast('Could not read the photos — '+(err.message||'try again'));
+  }
+}
+
+async function extractOne(shot){
+  if(isDemo()) return demoExtract(shot.kind);
+  const base64 = shot.dataUrl.split(',')[1];
+  const r = await post({ action:'extract', kind:shot.kind, image:base64, mime:'image/jpeg' });
+  if(!r.ok) throw new Error(r.error||'extract failed');
+  return r.data;
+}
+async function getInventory(){
+  if(isDemo()) return DEMO_INVENTORY;
+  const r = await post({ action:'inventory' });
+  if(!r.ok) throw new Error(r.error||'inventory failed');
+  return r.items||[];
+}
+async function post(body){
+  const r = await fetch(CFG.execUrl, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'}, // text/plain avoids CORS preflight
+    body: JSON.stringify(Object.assign({token:CFG.token}, body)),
+  });
+  const data = await r.json();
+  if(data && data.ok===false && /unauthor|session expired|log in/i.test(data.error||'')){
+    clearSession();
+    S.screen='capture'; render();
+    throw new Error('Session expired — please sign in again');
+  }
+  return data;
+}
+async function login(username, password){
+  const r = await fetch(CFG.execUrl, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({action:'login', username, password}),
+  });
+  const data = await r.json();
+  if(!data.ok) throw new Error(data.error||'Login failed');
+  CFG.token=data.data.token; CFG.user=data.data.user; saveCfg();
+  return data.data;
+}
+
+/* ---- reconcile: build rows from bill lines, merge covers, match inventory ---- */
+function reconcile(extractions, inventory){
+  const billLines=[], covers=[];
+  extractions.forEach(e=>{
+    if(e.kind==='bill' && e.data){
+      const sup=e.data.supplier||'';
+      (e.data.lines||[]).forEach(l=> billLines.push(Object.assign({supplier:sup}, l)));
+    } else if(e.kind==='cover' && e.data){
+      covers.push(e.data);
+    }
+  });
+
+  const rows=[];
+  const coverUsed=new Array(covers.length).fill(false);
+
+  // one row per bill line; attach best matching cover
+  billLines.forEach(line=>{
+    let best=-1, bestScore=0;
+    covers.forEach((cv,ci)=>{
+      if(coverUsed[ci]) return;
+      const sc=itemSim(line, cv);
+      if(sc>bestScore){ bestScore=sc; best=ci; }
+    });
+    const cv = (best>=0 && bestScore>=0.55) ? covers[best] : null;
+    if(cv) coverUsed[best]=true;
+    rows.push(makeRow(line, cv, cv?'both':'bill', inventory));
+  });
+
+  // covers with no bill line → standalone rows
+  covers.forEach((cv,ci)=>{
+    if(coverUsed[ci]) return;
+    rows.push(makeRow(null, cv, 'cover', inventory));
+  });
+
+  return rows;
+}
+
+function makeRow(line, cover, origin, inventory){
+  const name = pick(cover&&cover.name, line&&line.name) || '';
+  const potency = normPot(pick(cover&&cover.potency, line&&line.potency) || '');
+  const pack = pick(line&&line.pack, cover&&cover.pack) || '';
+  const r = {
+    id: uid('r'),
+    origin,                                   // both | bill | cover
+    name,
+    pack,
+    potency,
+    category: deriveCategory(potency),
+    qty: line ? num(line.qty) : '',           // bottles — only the bill knows
+    unitCost: line ? num(line.unitCost) : '', // only the bill knows
+    supplier: pick(cover&&cover.brand, line&&line.supplier) || '', // cover brand wins
+    mfd: cover ? (cover.mfd||'') : '',
+    expiry: cover ? (cover.expiry||'') : '',
+    barcode: cover ? (cover.barcode||'') : '',
+    batch: cover ? (cover.batch||'') : '',    // shown as aid only, never staged
+    confidence: line && cover ? 'high' : (line||cover ? 'med' : 'low'),
+    action:'', matchId:'', matchName:'', codeFamily:'',
+  };
+  // match against live inventory
+  const m = matchInventory(r, inventory);
+  if(m){ r.matchId=m.id; r.matchName=m.name; r.action='receive'; }
+  else { r.codeFamily=resolvePrefix(r.category, r.pack, r.potency); r.action='add'; }
+  // a cover-only row with no qty can't be received meaningfully — flag low
+  if(origin==='cover' && r.action==='receive' && r.qty==='') r.confidence='med';
+  return r;
+}
+
+/* ---- matching helpers ---- */
+function normName(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); }
+function normPot(s){
+  let p=String(s||'').toUpperCase().replace(/\s+/g,'').replace(/POTENCY|POT/g,'');
+  if(p==='Q'||p==='MT'||p==='Ø'||p==='TINCTURE'||p==='MOTHERTINCTURE') return 'MT';
+  const m=p.match(/^(\d+)(C|CH|X|D|M|LM)?$/);
+  if(m){ return m[1]+(m[2]?m[2].replace('CH','C'):''); }
+  return p;
+}
+function bigrams(s){ const a=[]; for(let i=0;i<s.length-1;i++) a.push(s.slice(i,i+2)); return a; }
+function dice(a,b){
+  a=normName(a); b=normName(b);
+  if(!a||!b) return 0;
+  if(a===b) return 1;
+  const A=bigrams(a), B=bigrams(b); if(!A.length||!B.length) return 0;
+  const m={}; A.forEach(x=>m[x]=(m[x]||0)+1);
+  let hit=0; B.forEach(x=>{ if(m[x]>0){ hit++; m[x]--; } });
+  return (2*hit)/(A.length+B.length);
+}
+function itemSim(line, cover){
+  let s = dice(line.name, cover.name)*0.8;
+  const lp=normPot(line.potency), cp=normPot(cover.potency);
+  if(lp&&cp){ s += (lp===cp ? 0.2 : -0.25); }
+  if(line.pack && cover.pack && normName(line.pack)===normName(cover.pack)) s+=0.05;
+  return Math.max(0,Math.min(1,s));
+}
+function matchInventory(r, inventory){
+  if(!inventory||!inventory.length) return null;
+  let best=null, bestScore=0;
+  inventory.forEach(it=>{
+    let sc=dice(r.name, it.name);
+    const rp=normPot(r.potency), ip=normPot(it.potency);
+    if(rp&&ip){ if(rp===ip) sc+=0.12; else sc-=0.2; }
+    if(r.pack && it.pack && normName(r.pack)===normName(it.pack)) sc+=0.08;
+    if(sc>bestScore){ bestScore=sc; best=it; }
+  });
+  return bestScore>=0.7 ? best : null;
+}
+/* Choose the SKU prefix family the catalog way (form → potency → pack). The final
+   number is minted server-side on approval, so we show only the family here. */
+function resolvePrefix(category, pack, potency){
+  const cat=String(category||'').toUpperCase(), pk=String(pack||'').toUpperCase(), pot=normPot(potency);
+  const ml=(pk.match(/(\d+)\s*ML/)||[])[1]||'';
+  if(/CREAM|GEL|OINT|TUBE/.test(cat)||/CREAM|GEL|OINT/.test(pk)) return 'EX';
+  if(cat==='OIL'||/OIL/.test(pk)) return 'OIL';
+  if(cat==='MT'||pot==='MT') return ml==='30'?'MTS':'MT';
+  if(cat==='BC') return 'BC';
+  if(ml==='15') return 'DLX';
+  if(ml==='30') return 'DLXX';
+  return 'DL';
+}
+function deriveCategory(potency){
+  const p=normPot(potency);
+  if(p==='MT') return 'MT';            // mother tincture
+  if(/X$/.test(p)) return 'BC';        // biochemic (X potency) — editable
+  if(p) return 'DL';                   // dilution — editable
+  return '';
+}
+
+/* ---- tiny utils ---- */
+function pick(){ for(const a of arguments){ if(a!==undefined&&a!==null&&String(a).trim()!=='') return a; } return ''; }
+function num(v){ const n=parseFloat(v); return isNaN(n)?'':n; }
+
+/* ===================================================================
+   3. STAGE TO WHIMS
+   =================================================================== */
+async function stageBatch(){
+  const rows=S.rows.filter(r=>r.action!=='skip').map(r=>({
+    source: r.origin==='both'?'Reconciled':(r.origin==='bill'?'Bill':'Cover'),
+    action: r.action==='receive'?'RECEIVE':'ADD_NEW',
+    matchedId: r.matchId||'',
+    proposedId: r.action==='add'?(r.codeFamily||''):'',
+    name:r.name, pack:r.pack, potency:r.potency, category:r.category,
+    qty:r.qty, unitCost:r.unitCost, supplier:r.supplier,
+    mfd:r.mfd, expiry:r.expiry, barcode:r.barcode,
+    confidence:r.confidence,
+    // note: batch is intentionally NOT sent — WHIMS does not track it
+  }));
+  if(!rows.length){ toast('Nothing to stage — every row is skipped'); return; }
+
+  const btn=document.getElementById('stageBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Staging…'; }
+
+  if(isDemo()){
+    await new Promise(r=>setTimeout(r,650));
+    S.stagedCounts=counts();
+    S.screen='done'; render();
+    return;
+  }
+  try{
+    const r=await post({ action:'stageIntake', rows });
+    if(!r.ok) throw new Error(r.error||'stage failed');
+    S.stagedCounts=counts();
+    S.screen='done'; render();
+  }catch(err){
+    if(btn){ btn.disabled=false; btn.textContent='Stage for review in WHIMS'; }
+    toast('Could not stage — '+(err.message||'check connection'));
+  }
+}
+function counts(){
+  const c={receive:0,add:0,skip:0};
+  S.rows.forEach(r=>c[r.action]++);
+  return c;
+}
+
+/* ===================================================================
+   RENDER
+   =================================================================== */
+const main=document.getElementById('main');
+const dock=document.getElementById('dock');
+
+function render(){
+  document.getElementById('demoPill').classList.toggle('hidden', !isDemo());
+  if(needsLogin()){ renderLogin(); dock.innerHTML=''; setSteps(); return; }
+  setSteps();
+  if(S.screen==='capture')    renderCapture();
+  else if(S.screen==='processing') renderProcessing();
+  else if(S.screen==='review')     renderReview();
+  else if(S.screen==='done')       renderDone();
+  window.scrollTo({top:0,behavior:'instant'});
+}
+
+/* ---- login (uses the WHIMS session login; same staff credentials) ---- */
+function renderLogin(){
+  main.innerHTML=`
+    <div class="hero" style="padding-top:32px">
+      <h1>Sign in</h1>
+      <p>Use your WHIMS staff username and password.</p>
+    </div>
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:var(--shadow);max-width:380px;margin:0 auto">
+      <div class="field-row"><label for="lgUser">Username</label><input id="lgUser" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
+      <div class="field-row"><label for="lgPass">Password</label><input id="lgPass" type="password" autocomplete="current-password"></div>
+      <div id="lgErr" style="color:var(--bad);font-size:13px;min-height:18px;margin:2px 0 8px"></div>
+      <button class="btn" id="lgBtn">Sign in</button>
+    </div>`;
+  const u=document.getElementById('lgUser'), p=document.getElementById('lgPass'), btn=document.getElementById('lgBtn'), err=document.getElementById('lgErr');
+  const go=async()=>{
+    err.textContent=''; btn.disabled=true; btn.textContent='Signing in…';
+    try{ await login(u.value.trim(), p.value); S.screen='capture'; render(); toast('Signed in as '+CFG.user); }
+    catch(ex){ err.textContent=ex.message||'Login failed'; btn.disabled=false; btn.textContent='Sign in'; }
+  };
+  btn.addEventListener('click', go);
+  p.addEventListener('keydown', e=>{ if(e.key==='Enter') go(); });
+}
+function setSteps(){
+  const map={capture:1,processing:1,review:2,done:3};
+  const cur=map[S.screen]||1;
+  document.querySelectorAll('.step').forEach(el=>{
+    const n=+el.dataset.step;
+    el.classList.toggle('on', n===cur);
+    el.classList.toggle('done', n<cur);
+  });
+}
+
+/* ---- capture screen ---- */
+function renderCapture(){
+  main.innerHTML=`
+    <div class="hero">
+      <h1>Photograph the delivery</h1>
+      <p>Snap the supplier bill and the medicine covers. Lens reads both and lines them up for WHIMS.</p>
+    </div>
+    <div class="cap-grid">
+      <label class="cap-card bill">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></div>
+        <h3>Add bill</h3>
+        <div class="sub">Quantity &amp; cost</div>
+        <input type="file" accept="image/*" capture="environment" multiple data-kind="bill">
+      </label>
+      <label class="cap-card cover">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 3v4h8V3M9 12h6M9 16h4"/></svg></div>
+        <h3>Add cover</h3>
+        <div class="sub">Identity &amp; expiry</div>
+        <input type="file" accept="image/*" capture="environment" multiple data-kind="cover">
+      </label>
+    </div>
+    ${S.shots.length?`
+      <div class="section-eyebrow" style="margin-top:24px">In this batch · ${S.shots.length}</div>
+      <div class="queue">${S.shots.map(shotRow).join('')}</div>
+    `:''}
+  `;
+  main.querySelectorAll('input[type=file]').forEach(inp=>{
+    inp.addEventListener('change', e=>{ addShots(inp.dataset.kind, e.target.files); inp.value=''; });
+  });
+  main.querySelectorAll('.shot .x').forEach(b=>{
+    b.addEventListener('click',()=>{ S.shots=S.shots.filter(s=>s.id!==b.dataset.id); render(); });
+  });
+  renderDock();
+}
+function shotRow(s){
+  return `<div class="shot">
+    <img src="${s.dataUrl}" alt="">
+    <div class="meta"><div class="nm">${esc(s.name)}</div><div class="tag ${s.kind}">${s.kind}</div></div>
+    <button class="x" data-id="${s.id}" aria-label="Remove"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+  </div>`;
+}
+
+/* ---- processing ---- */
+function renderProcessing(){
+  main.innerHTML=`<div class="proc"><div class="spin"></div><p class="now" id="procNow">${esc(S.procText||'Reading…')}</p><p>Extracting text, then matching against your ${S.inventory?S.inventory.length:''} items.</p></div>`;
+  dock.innerHTML='';
+}
+function paintProc(){ const el=document.getElementById('procNow'); if(el) el.textContent=S.procText; }
+
+/* ---- review ---- */
+function renderReview(){
+  const c=counts();
+  main.innerHTML=`
+    <div class="section-eyebrow">Review · ${S.rows.length} items</div>
+    <div class="summary">
+      <div class="chip-stat rec"><div class="n mono">${c.receive}</div><div class="l">Receive</div></div>
+      <div class="chip-stat add"><div class="n mono">${c.add}</div><div class="l">Add new</div></div>
+      <div class="chip-stat skip"><div class="n mono">${c.skip}</div><div class="l">Skip</div></div>
+    </div>
+    <div id="cards">${S.rows.map(cardHtml).join('')}</div>
+  `;
+  bindCards();
+  renderDock();
+}
+function cardHtml(r){
+  const sev = r.action==='skip' ? '' : (r.confidence==='high'?'ok':(r.confidence==='med'?'warn':'bad'));
+  const originLabel = r.origin==='both'?'Bill + Cover':(r.origin==='bill'?'Bill only':'Cover only');
+  const matchChip = r.matchId
+    ? `<span class="chip match"><span class="dot"></span>${esc(r.matchId)}</span>`
+    : `<span class="chip new">＋ NEW · ${esc(r.codeFamily)}</span>`;
+  const lowConf = r.confidence==='low' ? `<span class="chip lowconf">check</span>`:'';
+  return `<div class="card ${sev} ${r.action==='skip'?'skipped':''}" data-id="${r.id}">
+    <div class="card-head">
+      <div class="grow">
+        <input class="name" value="${esc(r.name)}" data-f="name" placeholder="Medicine name">
+        <div class="chips">${matchChip}<span class="chip origin">${originLabel}</span>${lowConf}</div>
+      </div>
+      <button class="caret" data-toggle aria-label="Expand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+    </div>
+    <div class="card-glance">
+      ${r.potency?`<span>Potency <b>${esc(r.potency)}</b></span>`:''}
+      ${r.pack?`<span>Pack <b>${esc(r.pack)}</b></span>`:''}
+      ${r.qty!==''?`<span>Qty <b>${esc(r.qty)}</b></span>`:''}
+      ${r.expiry?`<span>Exp <b>${esc(r.expiry)}</b></span>`:''}
+    </div>
+    <div class="card-body">
+      <div class="fgrid">
+        <div class="f"><label>Pack size</label><input data-f="pack" value="${esc(r.pack)}"></div>
+        <div class="f"><label>Potency</label><input data-f="potency" class="mono" value="${esc(r.potency)}"></div>
+        <div class="f"><label>Category</label><input data-f="category" class="mono" value="${esc(r.category)}"></div>
+        <div class="f"><label>Qty (bottles)</label><input data-f="qty" class="mono" inputmode="numeric" value="${esc(r.qty)}"></div>
+        <div class="f"><label>Unit cost</label><input data-f="unitCost" class="mono" inputmode="decimal" value="${esc(r.unitCost)}"></div>
+        <div class="f"><label>Supplier / brand</label><input data-f="supplier" value="${esc(r.supplier)}"></div>
+        <div class="f"><label>MFD</label><input data-f="mfd" class="mono" placeholder="YYYY-MM" value="${esc(r.mfd)}"></div>
+        <div class="f"><label>Expiry</label><input data-f="expiry" class="mono" placeholder="YYYY-MM" value="${esc(r.expiry)}"></div>
+        <div class="f wide"><label>Barcode → HoloScan (col U)</label><input data-f="barcode" class="mono" value="${esc(r.barcode)}"></div>
+        ${r.batch?`<div class="f wide"><label>Batch (read from cover · not saved)</label><input value="${esc(r.batch)}" class="mono" readonly></div>`:''}
+      </div>
+      <div class="actions" data-actions>
+        <button data-act="receive" class="rec ${r.action==='receive'?'sel':''}">Receive</button>
+        <button data-act="add" class="add ${r.action==='add'?'sel':''}">Add new</button>
+        <button data-act="skip" class="skip ${r.action==='skip'?'sel':''}">Skip</button>
+      </div>
+    </div>
+  </div>`;
+}
+function bindCards(){
+  main.querySelectorAll('.card').forEach(card=>{
+    const r=S.rows.find(x=>x.id===card.dataset.id);
+    card.querySelector('[data-toggle]').addEventListener('click',()=>card.classList.toggle('open'));
+    card.querySelectorAll('input[data-f]').forEach(inp=>{
+      inp.addEventListener('input',()=>{ r[inp.dataset.f]=inp.value; });
+    });
+    card.querySelectorAll('[data-actions] button').forEach(b=>{
+      b.addEventListener('click',()=>{
+        r.action=b.dataset.act;
+        renderReview();
+      });
+    });
+  });
+}
+
+/* ---- done ---- */
+function renderDone(){
+  const c=S.stagedCounts||counts();
+  main.innerHTML=`
+    <div class="done">
+      <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+      <h2>Staged for review</h2>
+      <p>These are waiting in WHIMS → Intake. Approve them there to update live stock.</p>
+      <div class="recap">
+        <div class="row"><span>To receive (+ stock)</span><b style="color:var(--ok)">${c.receive}</b></div>
+        <div class="row"><span>New items to add</span><b style="color:var(--wh-blue)">${c.add}</b></div>
+        <div class="row"><span>Skipped</span><b style="color:var(--faint)">${c.skip}</b></div>
+      </div>
+    </div>`;
+  dock.innerHTML=`<div class="dock-inner"><button class="btn ghost" id="newBatch">Start another batch</button></div>`;
+  document.getElementById('newBatch').addEventListener('click',()=>{
+    S.shots=[]; S.rows=[]; S.stagedCounts=null; S.screen='capture'; render();
+  });
+}
+
+/* ---- dock (sticky action bar) ---- */
+function renderDock(){
+  if(S.screen==='capture'){
+    const bills=S.shots.filter(s=>s.kind==='bill').length;
+    const covers=S.shots.filter(s=>s.kind==='cover').length;
+    dock.innerHTML=`<div class="dock-inner">
+      <span class="count">${bills} bill · ${covers} cover</span>
+      <button class="btn" id="extractBtn" ${S.shots.length?'':'disabled'}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a2 2 0 0 1 2-2h2M16 3h2a2 2 0 0 1 2 2v2M20 17v2a2 2 0 0 1-2 2h-2M8 21H6a2 2 0 0 1-2-2v-2"/><path d="M8 12h8"/></svg>
+        Read ${S.shots.length||''} photos
+      </button>
+    </div>`;
+    const b=document.getElementById('extractBtn');
+    if(b) b.addEventListener('click', runExtract);
+  } else if(S.screen==='review'){
+    const active=S.rows.filter(r=>r.action!=='skip').length;
+    dock.innerHTML=`<div class="dock-inner">
+      <button class="btn ghost" id="backBtn" style="flex:0 0 auto;width:auto;padding:14px 16px">Back</button>
+      <button class="btn" id="stageBtn" ${active?'':'disabled'}>Stage ${active} for WHIMS</button>
+    </div>`;
+    document.getElementById('backBtn').addEventListener('click',()=>{ S.screen='capture'; render(); });
+    document.getElementById('stageBtn').addEventListener('click', stageBatch);
+  } else { dock.innerHTML=''; }
+}
+
+/* ===================================================================
+   SETTINGS SHEET + TOAST
+   =================================================================== */
+const scrim=document.getElementById('scrim'), sheet=document.getElementById('sheet');
+function openSheet(){
+  document.getElementById('execUrl').value=CFG.execUrl;
+  document.getElementById('demoSwitch').classList.toggle('on', CFG.forceDemo);
+  const acct=document.getElementById('acctRow');
+  if(CFG.token){ acct.style.display='block'; document.getElementById('acctWho').textContent='Signed in as '+(CFG.user||'staff'); }
+  else acct.style.display='none';
+  scrim.classList.add('on'); sheet.classList.add('on');
+}
+function closeSheet(){ scrim.classList.remove('on'); sheet.classList.remove('on'); }
+document.getElementById('openSettings').addEventListener('click', openSheet);
+scrim.addEventListener('click', closeSheet);
+document.getElementById('demoSwitch').addEventListener('click',function(){ this.classList.toggle('on'); });
+document.getElementById('signOut').addEventListener('click',()=>{
+  if(CFG.token){ try{ post({action:'logout'}); }catch(e){} }
+  clearSession(); closeSheet(); render(); toast('Signed out');
+});
+document.getElementById('saveSettings').addEventListener('click',()=>{
+  const prevUrl=CFG.execUrl;
+  CFG.execUrl=document.getElementById('execUrl').value.trim();
+  CFG.forceDemo=document.getElementById('demoSwitch').classList.contains('on');
+  if(CFG.execUrl!==prevUrl) clearSession();   // new endpoint → require fresh sign-in
+  saveCfg(); closeSheet(); render();
+  toast(isDemo()?'Demo mode on':(CFG.token?'Connected':'Connected — please sign in'));
+});
+
+let toastT;
+function toast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('on');
+  clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('on'),2600);
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+
+/* ===================================================================
+   DEMO DATA (sample bill + covers + inventory snapshot)
+   =================================================================== */
+const DEMO_INVENTORY=[
+  {id:'MT003',name:'ABROMA AUGUSTA',pack:'100 ML',potency:'MT',category:'MT'},
+  {id:'MT012',name:'ARNICA MONTANA',pack:'100 ML',potency:'MT',category:'MT'},
+  {id:'DL045',name:'NUX VOMICA',pack:'30 ML',potency:'200',category:'DL'},
+  {id:'DL021',name:'BELLADONNA',pack:'30 ML',potency:'30',category:'DL'},
+  {id:'BC006',name:'BIOCOMBINATION 6',pack:'25 G',potency:'6X',category:'BC'},
+];
+function demoExtract(kind){
+  if(kind==='bill'){
+    return { supplier:'SBL', lines:[
+      {name:'Arnica Montana', potency:'Q',   pack:'100 ML', qty:5,  unitCost:95},
+      {name:'Nux Vomica',     potency:'200', pack:'30 ML',  qty:10, unitCost:70},
+      {name:'Gelsemium Sempervirens', potency:'200', pack:'30 ML', qty:6, unitCost:70},
+    ]};
+  }
+  // rotate sample covers so multiple cover shots show different items
+  demoExtract._i=(demoExtract._i||0);
+  const covers=[
+    {name:'Arnica Montana', potency:'Q',   pack:'100 ML', mfd:'2025-03', expiry:'2030-03', barcode:'8901234567890', batch:'A2451', brand:'SBL'},
+    {name:'Gelsemium Sempervirens', potency:'200', pack:'30 ML', mfd:'2025-05', expiry:'2030-05', barcode:'8909876543210', batch:'G7782', brand:'SBL'},
+  ];
+  return covers[(demoExtract._i++)%covers.length];
+}
+
+/* ---- boot ---- */
+render();
+</script>
+</body>
+</html>
