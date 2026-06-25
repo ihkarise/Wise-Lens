@@ -298,6 +298,7 @@ const DEFAULTS = {
   forceDemo: false,
 };
 let CFG = loadCfg();
+window.CFG = CFG;   // debug / integration hook
 function loadCfg(){ try{ return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(LS_KEY)||'{}')); }catch(e){ return {...DEFAULTS}; } }
 function saveCfg(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(CFG)); }catch(e){} }
 function isDemo(){ return CFG.forceDemo || !CFG.execUrl; }
@@ -314,20 +315,27 @@ const S = {
   voice:null,           // transient voice-capture state
 };
 let _id=0; const uid=p=>`${p}${(++_id).toString(36)}${Date.now().toString(36).slice(-3)}`;
+window.S=S;   // debug / integration hook
 
 /* ===================================================================
    1. CAPTURE
    =================================================================== */
 function addShots(kind, files, captureMode){
   const mode = captureMode || 'CAMERA';
-  const list=[...files];
-  let pending=list.length;
-  if(!pending) return;
-  list.forEach(file=>{
-    downscale(file, 1600, 0.82).then(dataUrl=>{
-      S.shots.push({ id:uid('s'), kind, dataUrl, name:file.name||`${kind} photo`, captureMode:mode });
-      if(--pending===0) render();
-    }).catch(()=>{ if(--pending===0) render(); });
+  ensureSession();
+  [...files].forEach(file=>{
+    IntakeCore.bump(S.session, mode);
+    const shot={ id:uid('s'), kind, dataUrl:'', name:file.name||`${kind} photo`, captureMode:mode, sessionId:S.session.id, status:'processing', stats:null, note:'' };
+    S.shots.push(shot);
+    render();                                   // show skeleton immediately (UI stays responsive)
+    ImagePipe.process(file).then(out=>{
+      shot.dataUrl=out.dataUrl; shot.stats=out; shot.status='ready'; render();
+    }).catch(async err=>{
+      // never block intake — fall back to a quick downscale, keep a gentle note
+      try{ shot.dataUrl=await downscale(file,1400,0.7); shot.status='ready'; shot.stats={fallback:true}; shot.note=err.message||''; }
+      catch(e){ shot.status='error'; shot.note=err.message||'Could not process this photo — try again'; }
+      render();
+    });
   });
 }
 function downscale(file, max, q){
@@ -351,7 +359,9 @@ function downscale(file, max, q){
    2. EXTRACT + RECONCILE
    =================================================================== */
 async function runExtract(){
-  S.screen='processing'; render();
+  const ready = S.shots.filter(s=>s.status==='ready' && s.dataUrl);
+  if(!ready.length){ toast(S.shots.some(s=>s.status==='processing')?'Still optimising photos — one moment':'Add a photo first'); return; }
+  S.screen='processing'; S.proc={total:ready.length,done:0,startedAt:Date.now(),step:'Reading'}; render();
   let extractions=[];
   try{
     // inventory first (for matching) — cached for the session
@@ -359,14 +369,17 @@ async function runExtract(){
     paintProc();
     S.inventory = await getInventory();
 
-    for(let i=0;i<S.shots.length;i++){
-      const sh=S.shots[i];
-      S.procText=`Reading ${sh.kind} ${i+1} of ${S.shots.length}…`;
+    for(let i=0;i<ready.length;i++){
+      const sh=ready[i];
+      S.procText=`Reading ${sh.kind} ${i+1} of ${ready.length}…`;
       paintProc();
       const data = await extractOne(sh);
       extractions.push({kind:sh.kind, data, captureMode:sh.captureMode||'CAMERA'});
+      S.proc.done=i+1; paintProc();
     }
     S.rows = reconcile(extractions, S.inventory);
+    const sid = ensureSession().id; S.rows.forEach(r=>{ if(!r.sessionId) r.sessionId=sid; });
+    scheduleSave();
     S.screen='review'; render();
   }catch(err){
     S.screen='capture'; render();
@@ -559,6 +572,7 @@ async function stageBatch(){
     source: label(r),
     entrySource:'WISE_LENS',                       // audit: who created it
     captureMode: r.captureMode||'CAMERA',          // audit: CAMERA / GALLERY / VOICE
+    sessionId: r.sessionId||'',                    // intake session reference
     action: r.action==='receive'?'RECEIVE':'ADD_NEW',
     matchedId: r.matchId||'',
     proposedId: r.action==='add'?(r.codeFamily||''):'',
@@ -573,9 +587,19 @@ async function stageBatch(){
   const btn=document.getElementById('stageBtn');
   if(btn){ btn.disabled=true; btn.textContent='Staging…'; }
 
+  if(!isDemo() && typeof navigator!=='undefined' && navigator.onLine===false){
+    OfflineQueue.enqueue({ rows, session:S.session });
+    if(S.session){ S.session.status='queued'; }
+    IntakeCore.clearDraft(); S.stagedCounts=counts(); S.queued=true; S.screen='done'; render();
+    toast('Saved offline — will upload when you’re back online');
+    return;
+  }
+
   if(isDemo()){
     await new Promise(r=>setTimeout(r,650));
     S.stagedCounts=counts();
+    if(S.session){ S.session.status='completed'; S.session.completedTime=new Date().toISOString(); }
+    IntakeCore.clearDraft();
     S.screen='done'; render();
     return;
   }
@@ -583,6 +607,8 @@ async function stageBatch(){
     const r=await post({ action:'stageIntake', rows });
     if(!r.ok) throw new Error(r.error||'stage failed');
     S.stagedCounts=counts();
+    if(S.session){ S.session.status='completed'; S.session.completedTime=new Date().toISOString(); }
+    IntakeCore.clearDraft();
     S.screen='done'; render();
   }catch(err){
     if(btn){ btn.disabled=false; btn.textContent='Stage for review in WHIMS'; }
@@ -602,6 +628,7 @@ const main=document.getElementById('main');
 const dock=document.getElementById('dock');
 
 function render(){
+  if(window._vlCleanup){ try{ window._vlCleanup(); }catch(e){} window._vlCleanup=null; }   // drop old scroll listener
   document.getElementById('demoPill').classList.toggle('hidden', !isDemo());
   if(needsLogin()){ renderLogin(); dock.innerHTML=''; setSteps(); return; }
   setSteps();
@@ -652,6 +679,8 @@ function renderCapture(){
       <h1>Add to inventory</h1>
       <p>Photograph the supplier bill and medicine covers, or just speak the details. Lens lines everything up for WHIMS.</p>
     </div>
+    ${resumeBannerHtml()}
+    ${pendingBannerHtml()}
     <div class="cap-grid">
       <div class="cap-card bill">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></div>
@@ -687,56 +716,90 @@ function renderCapture(){
   });
   const vc=document.getElementById('voiceCard');
   if(vc) vc.addEventListener('click', ()=> VoiceLens.open());
+  bindResumeBanner();
+  bindPendingBanner();
   main.querySelectorAll('.shot .x').forEach(b=>{
     b.addEventListener('click',()=>{ S.shots=S.shots.filter(s=>s.id!==b.dataset.id); render(); });
   });
   renderDock();
 }
 function shotRow(s){
-  return `<div class="shot">
-    <img src="${s.dataUrl}" alt="">
-    <div class="meta"><div class="nm">${esc(s.name)}</div><div class="tag ${s.kind}">${s.kind}</div></div>
+  const st=s.stats;
+  let info='';
+  if(s.status==='processing') info='<div class="stats">Optimising…</div>';
+  else if(s.status==='error') info='<div class="err">'+esc(s.note||'Could not process')+'</div>';
+  else if(st && !st.fallback) info='<div class="stats">'+ImagePipe.human(st.origBytes)+' → '+ImagePipe.human(st.bytes)+
+      ' · '+st.width+'×'+st.height+(st.savedPct?' · <span class="save">'+st.savedPct+'% smaller</span>':'')+'</div>';
+  else if(st && st.fallback) info='<div class="stats">Optimised (basic)</div>';
+  const thumb = s.dataUrl ? '<img class="thumb" src="'+s.dataUrl+'" alt="">' : '<div class="skel"></div>';
+  return `<div class="shot ${s.status==='processing'?'processing':''}">
+    ${thumb}
+    <div class="meta"><div class="nm">${esc(s.name)}</div><div class="tag ${s.kind}">${s.kind}</div>${info}</div>
     <button class="x" data-id="${s.id}" aria-label="Remove"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
   </div>`;
 }
 
 /* ---- processing ---- */
 function renderProcessing(){
-  main.innerHTML=`<div class="proc"><div class="spin"></div><p class="now" id="procNow">${esc(S.procText||'Reading…')}</p><p>Extracting text, then matching against your ${S.inventory?S.inventory.length:''} items.</p></div>`;
+  const p=S.proc; const pct=p&&p.total?Math.round(p.done/p.total*100):0;
+  const eta=p&&p.startedAt&&p.done?etaFmt(p.done,p.total,Date.now()-p.startedAt):'';
+  main.innerHTML=`<div class="proc"><div class="spin"></div>
+    <p class="now" id="procNow">${esc(S.procText||'Reading…')}</p>
+    ${p&&p.total?`<div class="proc-bar"><i id="procFill" style="width:${pct}%"></i></div>
+      <p class="proc-eta" id="procEta">${p.done} of ${p.total}${eta?' · ~'+eta+' left':''}</p>`:
+      `<p>Extracting text, then matching against your ${S.inventory?S.inventory.length:''} items.</p>`}
+  </div>`;
   dock.innerHTML='';
 }
-function paintProc(){ const el=document.getElementById('procNow'); if(el) el.textContent=S.procText; }
+function paintProc(){ const el=document.getElementById('procNow'); if(el) el.textContent=S.procText;
+  const p=S.proc; if(p&&p.total){ const f=document.getElementById('procFill'); if(f) f.style.width=Math.round(p.done/p.total*100)+'%';
+    const e=document.getElementById('procEta'); if(e){ const eta=p.startedAt&&p.done?etaFmt(p.done,p.total,Date.now()-p.startedAt):'';
+      e.textContent=p.done+' of '+p.total+(eta?' · ~'+eta+' left':''); } } }
 
 /* ---- review ---- */
 function renderReview(){
   const c=counts();
+  IntakeCore.findDuplicates(S.rows);                 // annotate dupOf for the cards
+  const warnN=IntakeCore.allWarnings(S.rows).length;
   main.innerHTML=`
-    <div class="section-eyebrow">Review · ${S.rows.length} items</div>
+    <div class="section-eyebrow">Review · ${S.rows.length} items${warnN?` · <span style="color:#B45309">${warnN} warning${warnN===1?'':'s'}</span>`:''}</div>
     <div class="summary">
       <div class="chip-stat rec"><div class="n mono">${c.receive}</div><div class="l">Receive</div></div>
       <div class="chip-stat add"><div class="n mono">${c.add}</div><div class="l">Add new</div></div>
       <div class="chip-stat skip"><div class="n mono">${c.skip}</div><div class="l">Skip</div></div>
     </div>
-    <div id="cards">${S.rows.map(cardHtml).join('')}</div>
+    <div id="selbar"></div>
+    <div id="cards"></div>
   `;
-  bindCards();
+  mountCards();
+  refreshSelBar();
   renderDock();
 }
 function cardHtml(r){
   const sev = r.action==='skip' ? '' : (r.confidence==='high'?'ok':(r.confidence==='med'?'warn':'bad'));
+  const t = IntakeCore.tier(r);                        // smart grouping: high collapses, med/low auto-open
+  const fc = IntakeCore.fieldConf(r);
+  const autoOpen = (t!=='high' && r.action!=='skip') ? 'open' : '';
   const originLabel = r.origin==='voice'?'Voice':(r.origin==='both'?'Bill + Cover':(r.origin==='bill'?'Bill only':'Cover only'));
   const matchChip = r.matchId
     ? `<span class="chip match"><span class="dot"></span>${esc(r.matchId)}</span>`
     : `<span class="chip new">＋ NEW · ${esc(r.codeFamily)}</span>`;
   const lowConf = r.confidence==='low' ? `<span class="chip lowconf">check</span>`:'';
-  return `<div class="card ${sev} ${r.action==='skip'?'skipped':''}" data-id="${r.id}">
+  const dupBar = (r.dupOf && !r.dupAck) ? `<div class="dup-bar"><b>Possible duplicate</b> in this intake
+      <button data-dup="view" data-id="${r.id}">View</button>
+      <button data-dup="merge" data-id="${r.id}">Merge</button>
+      <button data-dup="keep" data-id="${r.id}">Keep both</button></div>`:'';
+  const fconf=(f)=>`data-c="${fc[f]||'high'}"`;
+  return `<div class="card ${sev} ${autoOpen} ${r.action==='skip'?'skipped':''} ${r.sel?'selected':''} tier-${t}" data-id="${r.id}">
     <div class="card-head">
+      <label class="selwrap"><input type="checkbox" class="selbox" ${r.sel?'checked':''} aria-label="Select ${esc(r.name)||'item'}"></label>
       <div class="grow">
         <input class="name" value="${esc(r.name)}" data-f="name" placeholder="Medicine name">
-        <div class="chips">${matchChip}<span class="chip origin">${originLabel}</span>${lowConf}</div>
+        <div class="chips">${matchChip}<span class="chip origin">${originLabel}</span>${lowConf}<span class="conf-dot conf-${t}" title="confidence: ${t}"></span></div>
       </div>
       <button class="caret" data-toggle aria-label="Expand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
     </div>
+    ${dupBar}
     <div class="card-glance">
       ${r.potency?`<span>Potency <b>${esc(r.potency)}</b></span>`:''}
       ${r.pack?`<span>Pack <b>${esc(r.pack)}</b></span>`:''}
@@ -745,15 +808,15 @@ function cardHtml(r){
     </div>
     <div class="card-body">
       <div class="fgrid">
-        <div class="f"><label>Pack size</label><input data-f="pack" value="${esc(r.pack)}"></div>
-        <div class="f"><label>Potency</label><input data-f="potency" class="mono" value="${esc(r.potency)}"></div>
-        <div class="f"><label>Category</label><input data-f="category" class="mono" value="${esc(r.category)}"></div>
-        <div class="f"><label>Qty (bottles)</label><input data-f="qty" class="mono" inputmode="numeric" value="${esc(r.qty)}"></div>
+        <div class="f" ${fconf('pack')}><label>Pack size</label><input data-f="pack" value="${esc(r.pack)}"></div>
+        <div class="f" ${fconf('potency')}><label>Potency</label><input data-f="potency" class="mono" value="${esc(r.potency)}"></div>
+        <div class="f" ${fconf('category')}><label>Category</label><input data-f="category" class="mono" value="${esc(r.category)}"></div>
+        <div class="f" ${fconf('qty')}><label>Qty (bottles)</label><input data-f="qty" class="mono" inputmode="numeric" value="${esc(r.qty)}"></div>
         <div class="f"><label>Unit cost</label><input data-f="unitCost" class="mono" inputmode="decimal" value="${esc(r.unitCost)}"></div>
-        <div class="f"><label>Supplier / brand</label><input data-f="supplier" value="${esc(r.supplier)}"></div>
+        <div class="f" ${fconf('supplier')}><label>Supplier / brand</label><input data-f="supplier" value="${esc(r.supplier)}"></div>
         <div class="f"><label>MFD</label><input data-f="mfd" class="mono" placeholder="YYYY-MM" value="${esc(r.mfd)}"></div>
-        <div class="f"><label>Expiry</label><input data-f="expiry" class="mono" placeholder="YYYY-MM" value="${esc(r.expiry)}"></div>
-        <div class="f wide"><label>Barcode → HoloScan (col U)</label><input data-f="barcode" class="mono" value="${esc(r.barcode)}"></div>
+        <div class="f" ${fconf('expiry')}><label>Expiry</label><input data-f="expiry" class="mono" placeholder="YYYY-MM" value="${esc(r.expiry)}"></div>
+        <div class="f wide" ${fconf('barcode')}><label>Barcode → HoloScan (col U)</label><input data-f="barcode" class="mono" value="${esc(r.barcode)}"></div>
         ${r.batch?`<div class="f wide"><label>Batch (read from cover · not saved)</label><input value="${esc(r.batch)}" class="mono" readonly></div>`:''}
       </div>
       <div class="actions" data-actions>
@@ -764,16 +827,21 @@ function cardHtml(r){
     </div>
   </div>`;
 }
-function bindCards(){
-  main.querySelectorAll('.card').forEach(card=>{
+function bindCards(root){
+  (root||main).querySelectorAll('.card').forEach(card=>{
     const r=S.rows.find(x=>x.id===card.dataset.id);
+    const cb=card.querySelector('.selbox');
+    if(cb) cb.addEventListener('change',()=>{ r.sel=cb.checked; card.classList.toggle('selected',cb.checked); refreshSelBar(); });
     card.querySelector('[data-toggle]').addEventListener('click',()=>card.classList.toggle('open'));
     card.querySelectorAll('input[data-f]').forEach(inp=>{
-      inp.addEventListener('input',()=>{ r[inp.dataset.f]=inp.value; });
+      inp.addEventListener('input',()=>{ r[inp.dataset.f]=inp.value; scheduleSave(); });
+    });
+    card.querySelectorAll('[data-dup]').forEach(b=>{
+      b.addEventListener('click',()=>dupAction(b.dataset.dup, b.dataset.id));
     });
     card.querySelectorAll('[data-actions] button').forEach(b=>{
       b.addEventListener('click',()=>{
-        r.action=b.dataset.act;
+        r.action=b.dataset.act; scheduleSave();
         renderReview();
       });
     });
@@ -821,7 +889,7 @@ function renderDock(){
       <button class="btn" id="stageBtn" ${active?'':'disabled'}>Stage ${active} for WHIMS</button>
     </div>`;
     document.getElementById('backBtn').addEventListener('click',()=>{ S.screen='capture'; render(); });
-    document.getElementById('stageBtn').addEventListener('click', stageBatch);
+    document.getElementById('stageBtn').addEventListener('click', preStage);
   } else { dock.innerHTML=''; }
 }
 
@@ -1112,7 +1180,8 @@ async function voiceAdd(){ const pr=S.voice&&S.voice.parsed;
   const line={ name:pr.name, potency:pr.potency, pack:pr.pack, qty:pr.qty, unitCost:'', supplier:pr.supplier, captureMode:'VOICE' };
   const row=makeRow(line, null, 'voice', S.inventory);
   row.expiry=pr.expiry||''; row.captureMode='VOICE';
-  S.rows.push(row); S.voice=null; S.screen='review'; render(); toast('Added — review and stage');
+  ensureSession(); IntakeCore.bump(S.session,'VOICE'); row.sessionId=S.session.id;
+  S.rows.push(row); scheduleSave(); S.voice=null; S.screen='review'; render(); toast('Added — review and stage');
 }
 function voiceBack(){ const p=VoiceLens.active(); if(p&&p.abort) try{ p.abort(); }catch(e){} clearInterval(_vTimer); stopViz(); S.voice=null; S.screen='capture'; render(); }
 
@@ -1152,8 +1221,533 @@ function renderVoice(){
   if(rec) paintTranscript();
 }
 
+/* ===================================================================
+   IMAGE PIPELINE  —  client-side optimisation before any upload
+   -------------------------------------------------------------------
+   read → EXIF auto-rotate (createImageBitmap from-image) → strip metadata
+   (canvas re-encode) → HEIC/HEIF decode (lazy) → resize longest side 1400px
+   → JPEG q0.75 → if >300KB q0.65 → if still >300KB resize 1200px q0.60.
+   Heavy work runs in a Web Worker (OffscreenCanvas) with a main-thread
+   fallback. Nothing original is ever uploaded; only the optimised JPEG.
+   =================================================================== */
+(function injectImgCSS(){
+  const css=`
+  .shot{ position:relative; }
+  .shot.processing .thumb,.shot .skel{ background:linear-gradient(100deg,var(--field,#eef1f8) 30%,rgba(255,255,255,.6) 50%,var(--field,#eef1f8) 70%);
+    background-size:200% 100%; animation:shimmer 1.2s infinite linear; }
+  @keyframes shimmer{ 0%{ background-position:200% 0; } 100%{ background-position:-200% 0; } }
+  .shot .skel{ width:46px; height:46px; border-radius:10px; flex:0 0 auto; }
+  .shot .stats{ font-size:11px; color:var(--muted,#76809b); margin-top:2px; }
+  .shot .stats .save{ color:#1E8E5A; font-weight:600; }
+  .shot .err{ font-size:11.5px; color:var(--bad,#C21F35); margin-top:2px; }
+  html[data-theme="dark"] .shot .skel,html[data-theme="dark"] .shot.processing .thumb{ background:linear-gradient(100deg,rgba(255,255,255,.06) 30%,rgba(255,255,255,.14) 50%,rgba(255,255,255,.06) 70%); background-size:200% 100%; }
+  `;
+  const st=document.createElement('style'); st.id='img-css'; st.textContent=css; document.head.appendChild(st);
+})();
+
+const ImagePipe=(function(){
+  const MAX1=1400, MAX2=1200, Q1=0.75, Q2=0.65, Q3=0.60, TARGET=300*1024;
+  const HEIC_CDN='https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+
+  // ---- pure helpers (unit-tested) ----
+  function human(b){ b=Number(b)||0; if(b<1024) return b+' B'; if(b<1048576) return (b/1024).toFixed(b<10240?1:0)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+  function extType(nameOrType){ const s=String(nameOrType||'').toLowerCase();
+    if(/hei[cf]/.test(s)) return 'heic'; if(/jpe?g/.test(s)) return 'jpeg'; if(/png/.test(s)) return 'png';
+    if(/webp/.test(s)) return 'webp'; return 'other'; }
+  function isHeic(file){ if(!file) return false; return extType(file.type)==='heic' || extType(file.name)==='heic'; }
+  function scaleDims(w,h,max){ const s=Math.min(1, max/Math.max(w,h)); return { w:Math.max(1,Math.round(w*s)), h:Math.max(1,Math.round(h*s)) }; }
+  function targetMet(bytes){ return bytes<=TARGET; }
+  function savedPct(orig,out){ orig=Number(orig)||0; out=Number(out)||0; return orig>0?Math.max(0,Math.round((1-out/orig)*100)):0; }
+
+  // ---- inline Web Worker (decode → resize → adaptive encode) ----
+  const workerSrc = `self.onmessage=async function(e){var d=e.data;try{var bmp=await createImageBitmap(d.blob,{imageOrientation:'from-image'});var ow=bmp.width,oh=bmp.height;function scale(max){var s=Math.min(1,max/Math.max(ow,oh));return{w:Math.max(1,Math.round(ow*s)),h:Math.max(1,Math.round(oh*s))};}async function enc(dim,q){var c=new OffscreenCanvas(dim.w,dim.h);var g=c.getContext('2d');g.drawImage(bmp,0,0,dim.w,dim.h);return await c.convertToBlob({type:'image/jpeg',quality:q});}var dim=scale(d.max1),q=d.q1,b=await enc(dim,q);if(b.size>d.target){q=d.q2;b=await enc(dim,q);}if(b.size>d.target){dim=scale(d.max2);q=d.q3;b=await enc(dim,q);}if(bmp.close)bmp.close();self.postMessage({id:d.id,ok:true,blob:b,width:dim.w,height:dim.h,bytes:b.size,quality:q,origW:ow,origH:oh});}catch(err){self.postMessage({id:d.id,ok:false,error:String(err&&err.message||err)});}};`;
+
+  let worker=null, jobs={}, jid=0;
+  function ensureWorker(){
+    if(worker!==null) return worker;
+    if(!(window.Worker && window.OffscreenCanvas && ('createImageBitmap' in window) && window.URL && URL.createObjectURL)){ worker=false; return false; }
+    try{
+      worker=new Worker(URL.createObjectURL(new Blob([workerSrc],{type:'text/javascript'})));
+      worker.onmessage=e=>{ const j=jobs[e.data.id]; if(!j) return; delete jobs[e.data.id];
+        e.data.ok?j.res(e.data):j.rej(new Error(e.data.error||'worker failed')); };
+      worker.onerror=()=>{ Object.keys(jobs).forEach(k=>{ jobs[k].rej(new Error('worker error')); delete jobs[k]; }); };
+    }catch(e){ worker=false; }
+    return worker;
+  }
+  function runWorker(w,opts){ return new Promise((res,rej)=>{ const id=++jid; jobs[id]={res,rej}; opts.id=id; w.postMessage(opts); }); }
+
+  // ---- main-thread fallback (no Worker / OffscreenCanvas) ----
+  function loadImg(blob){ return new Promise((res,rej)=>{ const i=new Image(); const u=URL.createObjectURL(blob);
+    i.onload=()=>{ URL.revokeObjectURL(u); res(i); }; i.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('decode failed')); }; i.src=u; }); }
+  async function runMain(blob,o){
+    let bmp,ow,oh;
+    if('createImageBitmap' in window){ bmp=await createImageBitmap(blob,{imageOrientation:'from-image'}); ow=bmp.width; oh=bmp.height; }
+    else { bmp=await loadImg(blob); ow=bmp.naturalWidth; oh=bmp.naturalHeight; }
+    const enc=(dim,q)=>new Promise(r=>{ const c=document.createElement('canvas'); c.width=dim.w; c.height=dim.h;
+      c.getContext('2d').drawImage(bmp,0,0,dim.w,dim.h); c.toBlob(b=>r(b),'image/jpeg',q); });
+    let dim=scaleDims(ow,oh,o.max1),q=o.q1,b=await enc(dim,q);
+    if(b.size>o.target){ q=o.q2; b=await enc(dim,q); }
+    if(b.size>o.target){ dim=scaleDims(ow,oh,o.max2); q=o.q3; b=await enc(dim,q); }
+    return { blob:b, width:dim.w, height:dim.h, bytes:b.size, quality:q, origW:ow, origH:oh };
+  }
+
+  // ---- HEIC (lazy decoder, only when actually needed) ----
+  function loadHeic(){ return new Promise((res,rej)=>{ if(window.heic2any) return res();
+    const s=document.createElement('script'); s.src=HEIC_CDN; s.onload=()=>res();
+    s.onerror=()=>rej(new Error('offline')); document.head.appendChild(s); }); }
+  async function decodeHeic(file){ await loadHeic();
+    const out=await window.heic2any({ blob:file, toType:'image/jpeg', quality:0.92 });
+    return Array.isArray(out)?out[0]:out; }
+
+  function blobToDataURL(blob){ return new Promise((res,rej)=>{ const r=new FileReader();
+    r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(blob); }); }
+
+  // ---- public: optimise one file ----
+  async function process(file){
+    const origBytes=file.size||0;
+    let src=file;
+    if(isHeic(file)){
+      try{ src=await decodeHeic(file); }
+      catch(e){ throw new Error('This looks like an iPhone HEIC photo and couldn’t be opened here. Tip: in iPhone Settings → Camera → Formats choose “Most Compatible”, or pick a JPEG from Gallery.'); }
+    }
+    const opts={ max1:MAX1, max2:MAX2, q1:Q1, q2:Q2, q3:Q3, target:TARGET };
+    const w=ensureWorker();
+    const out = w ? await runWorker(w,Object.assign({blob:src},opts)) : await runMain(src,opts);
+    const dataUrl=await blobToDataURL(out.blob);
+    return { dataUrl, bytes:out.bytes, width:out.width, height:out.height, quality:out.quality,
+      origBytes, origW:out.origW, origH:out.origH, savedPct:savedPct(origBytes,out.bytes),
+      megapixels: out.origW&&out.origH ? +((out.origW*out.origH)/1e6).toFixed(1) : null };
+  }
+
+  return { process, isHeic, extType, human, scaleDims, targetMet, savedPct,
+    workerActive:()=>!!ensureWorker(), _:{MAX1,MAX2,Q1,Q2,Q3,TARGET} };
+})();
+window.ImagePipe=ImagePipe;
+
+/* ===================================================================
+   INTAKE CORE  —  the "assistant" layer (pure, JSDoc-typed, testable)
+   Session · per-field confidence · fuzzy duplicates · warnings ·
+   staging validation · session summary · auto-save / resume.
+   Pure functions only — no DOM, no network. Backward compatible:
+   nothing here changes OCR, voice, reconcile, matching or the backend.
+   =================================================================== */
+const IntakeCore=(function(){
+  /** @typedef {Object} Row */
+  /** New intake session. @param {string} user @returns {Object} */
+  function newSession(user){ return { id:'IS'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36),
+    startTime:new Date().toISOString(), completedTime:'', createdBy:user||'staff', status:'draft', counts:{CAMERA:0,GALLERY:0,VOICE:0} }; }
+  /** @param {Object} session @param {string} mode */
+  function bump(session,mode){ if(!session) return; const m=String(mode||'').toUpperCase(); if(!session.counts[m]) session.counts[m]=0; session.counts[m]++; }
+
+  const has=v=>v!==''&&v!=null&&String(v).trim()!=='';
+  /** Heuristic per-field confidence (transparent stand-in for model scores). @returns {Object<string,'high'|'med'|'low'>} */
+  function fieldConf(r){ return {
+    name:    !has(r.name)?'low':(String(r.name).trim().length>=3?'high':'med'),
+    potency: !has(r.potency)?'low':(/^(MT|Q|\d+X|\d+|1M|LM\d+|\d+M)$/i.test(String(r.potency).trim())?'high':'med'),
+    pack:    !has(r.pack)?'low':(/\d+\s*(ML|G)\b/i.test(String(r.pack))?'high':'med'),
+    qty:     (r.action==='skip')?'high':(!has(r.qty)?'low':(Number(r.qty)>0?'high':'med')),
+    expiry:  !has(r.expiry)?'med':(/^\d{4}-\d{2}$/.test(String(r.expiry).trim())?'high':'med'),
+    supplier:!has(r.supplier)?'med':'high',
+    barcode: !has(r.barcode)?'high':(/^\d{8,}$/.test(String(r.barcode).replace(/\D/g,''))?'high':'med'),
+    category:!has(r.category)?'med':'high'
+  }; }
+  /** Overall review tier (drives smart grouping). @returns {'high'|'med'|'low'} */
+  function tier(r){ if(r.action==='skip') return 'high'; const c=fieldConf(r);
+    if(c.name==='low'||c.qty==='low'||r.confidence==='low') return 'low';
+    if(c.name==='med'||c.potency==='low'||c.pack==='low'||c.qty==='med'||r.confidence==='med') return 'med';
+    return 'high'; }
+
+  function norm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); }
+  function bigrams(s){ const o={}; for(let i=0;i<s.length-1;i++){ const g=s.slice(i,i+2); o[g]=(o[g]||0)+1; } return o; }
+  /** Dice-coefficient name similarity 0..1. */
+  function dice(a,b){ a=norm(a); b=norm(b); if(!a||!b) return 0; if(a===b) return 1;
+    const A=bigrams(a),B=bigrams(b); let inter=0,sa=0,sb=0;
+    for(const k in A){ sa+=A[k]; if(B[k]) inter+=Math.min(A[k],B[k]); } for(const k in B) sb+=B[k];
+    return (sa+sb)?(2*inter)/(sa+sb):0; }
+  /** Flag in-session duplicates (fuzzy). Mutates rows: sets r.dupOf. Bucketed by name
+   *  prefix + exact matched-id map so 500+ rows stay fast. @returns {Array} pairs */
+  function findDuplicates(rows){ const pairs=[];
+    rows.forEach(r=>{ r.dupOf=''; });
+    const byId={};      // matchId -> {id, idx} of earliest row with that matched id
+    const buckets={};   // name-prefix -> earlier candidate rows (ascending idx)
+    for(let i=0;i<rows.length;i++){ const a=rows[i]; if(a.action==='skip'||a.dupAck) continue;
+      let cand = (a.matchId && byId[a.matchId]!=null) ? byId[a.matchId] : null;     // exact matched-id duplicate
+      const key=norm(a.name).slice(0,3); const bucket=buckets[key]||(buckets[key]=[]);
+      for(let k=0;k<bucket.length;k++){ const b=bucket[k];
+        if(norm(a.potency)===norm(b.potency) && norm(a.pack)===norm(b.pack) && dice(a.name,b.name)>=0.82){
+          if(!cand || b.idx<cand.idx) cand={id:b.id,idx:b.idx};   // earliest of id / fuzzy, like brute-force
+          break; } }
+      if(cand){ a.dupOf=cand.id; pairs.push({a:a.id,b:cand.id,sim:1}); }
+      if(a.matchId && byId[a.matchId]==null) byId[a.matchId]={id:a.id,idx:i};
+      bucket.push({id:a.id,name:a.name,potency:a.potency,pack:a.pack,idx:i}); }
+    return pairs; }
+  /** Merge `from` into `into` (fill blanks; sum qty if same matched id); skip `from`. */
+  function mergeRows(into,from){ ['name','potency','pack','unitCost','supplier','mfd','expiry','barcode','category','matchId','matchName'].forEach(k=>{
+      if((into[k]===''||into[k]==null)&&has(from[k])) into[k]=from[k]; });
+    if(has(into.qty)&&has(from.qty)&&into.matchId&&into.matchId===from.matchId) into.qty=Number(into.qty)+Number(from.qty);
+    else if(!has(into.qty)&&has(from.qty)) into.qty=from.qty;
+    from.action='skip'; from.dupOf=''; return into; }
+
+  /** Per-row warnings. @returns {string[]} */
+  function rowWarnings(r){ const w=[]; if(r.action==='skip') return w;
+    if(!has(r.name)) w.push('Missing medicine name');
+    if(!has(r.potency)) w.push('Missing potency');
+    if(!has(r.expiry)) w.push('Missing expiry');
+    if(!has(r.supplier)) w.push('Missing supplier');
+    if(!has(r.qty)||Number(r.qty)<=0) w.push('Quantity not set');
+    if(has(r.qty)&&Number(r.qty)>500) w.push('Unusually high quantity ('+r.qty+')');
+    if(has(r.barcode)&&!/^\d{8,}$/.test(String(r.barcode).replace(/\D/g,''))) w.push('Barcode looks unreadable');
+    if(r.dupOf&&!r.dupAck) w.push('Possible duplicate in this intake');
+    if(r.confidence==='low') w.push('Low OCR confidence — please check');
+    return w; }
+  function allWarnings(rows){ const out=[]; rows.forEach(r=>rowWarnings(r).forEach(m=>out.push({id:r.id,name:r.name||'(unnamed)',msg:m}))); return out; }
+
+  /** Final pre-stage validation. @returns {{ok:boolean,errors:Array,warnings:Array,count:number}} */
+  function validate(rows){ const errors=[],warnings=[]; const act=rows.filter(r=>r.action!=='skip');
+    act.forEach(r=>{ if(!String(r.name).trim()) errors.push({id:r.id,field:'name',msg:'Medicine name required'});
+      if(r.action==='receive'&&!r.matchId) errors.push({id:r.id,field:'match',msg:'Receive needs a matched item'});
+      if(!has(r.qty)||Number(r.qty)<=0) errors.push({id:r.id,field:'qty',msg:'Quantity must be greater than 0'}); });
+    rows.forEach(r=>rowWarnings(r).forEach(m=>warnings.push({id:r.id,msg:m})));
+    return { ok:errors.length===0&&act.length>0, errors, warnings, count:act.length }; }
+
+  /** Session summary counts. */
+  function summarize(rows,session){ const s={camera:0,gallery:0,voice:0,total:0,matched:0,newItems:0,warnings:0,skipped:0};
+    rows.forEach(r=>{ if(r.action==='skip'){ s.skipped++; return; } s.total++;
+      const cm=String(r.captureMode||'CAMERA').toUpperCase();
+      if(cm==='CAMERA')s.camera++; else if(cm==='GALLERY')s.gallery++; else if(cm==='VOICE')s.voice++;
+      if(r.action==='receive')s.matched++; else if(r.action==='add')s.newItems++;
+      if(rowWarnings(r).length)s.warnings++; });
+    return s; }
+
+  // ---- auto-save / resume (localStorage; review rows + session, not raw photos) ----
+  const KEY='wiseLensDraft';
+  function saveDraft(session,rows){ try{ localStorage.setItem(KEY,JSON.stringify({savedAt:new Date().toISOString(),session,rows})); return true; }catch(e){ return false; } }
+  function loadDraft(){ try{ const r=localStorage.getItem(KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
+  function hasDraft(){ const d=loadDraft(); return !!(d&&d.rows&&d.rows.length); }
+  function clearDraft(){ try{ localStorage.removeItem(KEY); }catch(e){} }
+
+  return { newSession, bump, fieldConf, tier, dice, findDuplicates, mergeRows, rowWarnings, allWarnings, validate, summarize,
+    saveDraft, loadDraft, hasDraft, clearDraft };
+})();
+window.IntakeCore=IntakeCore;
+
+(function injectIntakeCSS(){ const css=`
+  .resume-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--brand,#2A3C78);color:#fff;border-radius:12px;padding:10px 12px;margin:0 0 14px;font-size:13px;}
+  .resume-banner .ra{display:flex;gap:6px;} .resume-banner button{border:none;border-radius:8px;padding:7px 11px;font-weight:600;font-size:12px;cursor:pointer;}
+  .resume-banner .go{background:#fff;color:var(--brand,#2A3C78);} .resume-banner .no{background:rgba(255,255,255,.18);color:#fff;}
+  .conf-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-left:6px;vertical-align:middle;}
+  .conf-high{background:#1E8E5A;} .conf-med{background:#D98A00;} .conf-low{background:#C21F35;}
+  .f[data-c=low] label{color:var(--bad,#C21F35);} .f[data-c=med] label{color:#B45309;}
+  .dup-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#FEF3C7;color:#92400E;border-radius:8px;padding:6px 9px;margin:8px 0 0;font-size:12px;}
+  .dup-bar b{font-weight:700;} .dup-bar button{border:none;border-radius:6px;padding:4px 9px;font-size:11.5px;font-weight:600;cursor:pointer;background:#fff;color:#92400E;}
+  .imodal-scrim{position:fixed;inset:0;background:rgba(10,16,40,.5);z-index:200;display:flex;align-items:flex-end;justify-content:center;}
+  .imodal{background:var(--bg,#fff);width:100%;max-width:560px;max-height:88vh;overflow:auto;border-radius:18px 18px 0 0;padding:18px;}
+  @media(min-width:600px){.imodal-scrim{align-items:center;}.imodal{border-radius:18px;}}
+  .imodal h2{font-size:18px;margin:0 0 4px;} .imodal .sub{color:var(--muted,#76809b);font-size:12.5px;margin-bottom:8px;}
+  .isum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0;}
+  .isum div{background:var(--field,#f3f5fb);border-radius:10px;padding:9px 6px;text-align:center;}
+  .isum b{display:block;font-size:18px;font-family:'JetBrains Mono',monospace;} .isum span{font-size:9.5px;color:var(--muted,#76809b);text-transform:uppercase;letter-spacing:.05em;}
+  .ilist{margin-top:8px;} .iitem{display:flex;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:8px;font-size:12.5px;margin-top:5px;cursor:pointer;}
+  .iitem.warn{background:#FEF3C7;color:#92400E;} .iitem.err{background:#FEE2E2;color:#991B1B;cursor:default;}
+  .imodal .row2{display:flex;gap:10px;margin-top:14px;} .imodal .row2 button{flex:1;padding:13px;border:none;border-radius:12px;font-weight:600;font-size:14px;cursor:pointer;}
+  .imodal .go{background:var(--brand,#2A3C78);color:#fff;} .imodal .go:disabled{opacity:.5;} .imodal .no{background:var(--field,#eef1f8);color:var(--ink,#1b2440);}
+  html[data-theme=dark] .imodal,html[data-theme=dark] .isum div{background:#141C36;color:#E8ECF7;}
+`; const st=document.createElement('style'); st.id='intake-css'; st.textContent=css; document.head.appendChild(st); })();
+
+/* ---- session + autosave wiring ---- */
+function ensureSession(){ if(!S.session) S.session=IntakeCore.newSession((typeof CFG!=='undefined'&&CFG.user)||'staff'); return S.session; }
+let _saveT; function scheduleSave(){ clearTimeout(_saveT); _saveT=setTimeout(()=>{ if(S.rows&&S.rows.length) IntakeCore.saveDraft(S.session,S.rows); }, 1000); }
+
+/* ---- resume banner (shown on capture when a draft exists and nothing in progress) ---- */
+function resumeBannerHtml(){ if(S.rows.length||!IntakeCore.hasDraft()) return '';
+  const d=IntakeCore.loadDraft(); const n=d&&d.rows?d.rows.length:0;
+  return `<div class="resume-banner"><span>Unfinished intake · ${n} item${n===1?'':'s'} saved</span>
+    <span class="ra"><button class="no" id="draftNew">Start new</button><button class="go" id="draftResume">Resume</button></span></div>`; }
+function bindResumeBanner(){ const r=document.getElementById('draftResume'), n=document.getElementById('draftNew');
+  if(r) r.addEventListener('click',()=>{ const d=IntakeCore.loadDraft(); if(d){ S.rows=d.rows||[]; S.session=d.session||ensureSession(); S.screen='review'; render(); }});
+  if(n) n.addEventListener('click',()=>{ IntakeCore.clearDraft(); render(); }); }
+
+/* ---- duplicate row actions ---- */
+function dupAction(act,id){ const r=S.rows.find(x=>x.id===id); if(!r) return;
+  if(act==='merge'){ const into=S.rows.find(x=>x.id===r.dupOf); if(into){ IntakeCore.mergeRows(into,r); toast('Merged into '+(into.name||'item')); } }
+  else if(act==='keep'){ r.dupAck=true; r.dupOf=''; toast('Keeping both'); }
+  else if(act==='view'){ const t=document.querySelector('.card[data-id="'+r.dupOf+'"]'); if(t){ t.classList.add('open'); t.scrollIntoView({behavior:'smooth',block:'center'}); return; } }
+  scheduleSave(); renderReview(); }
+
+/* ---- pre-stage summary + warnings + validation gate (#8 #9 #15) ---- */
+function preStage(){
+  ensureSession(); IntakeCore.findDuplicates(S.rows);
+  const v=IntakeCore.validate(S.rows); const s=IntakeCore.summarize(S.rows,S.session);
+  const cell=(n,l)=>`<div><b>${n}</b><span>${l}</span></div>`;
+  const errs=v.errors.map(e=>`<div class="iitem err"><span>${esc(rowName(e.id))}</span><span>${esc(e.msg)}</span></div>`).join('');
+  const warnSeen={}; const warns=v.warnings.filter(w=>{ const k=w.id+w.msg; if(warnSeen[k])return false; warnSeen[k]=1; return true; })
+    .map(w=>`<div class="iitem warn" data-jump="${w.id}"><span>${esc(rowName(w.id))}</span><span>${esc(w.msg)} ›</span></div>`).join('');
+  const html=`<div class="imodal-scrim" id="imodalScrim"><div class="imodal" role="dialog" aria-modal="true" aria-label="Confirm intake">
+    <h2>Confirm intake</h2><div class="sub">Session ${esc(S.session.id)} · ${esc(S.session.createdBy)}</div>
+    <div class="isum">${cell(s.camera,'Camera')}${cell(s.gallery,'Gallery')}${cell(s.voice,'Voice')}${cell(s.total,'Total')}
+      ${cell(s.matched,'Matched')}${cell(s.newItems,'New')}${cell(s.warnings,'Warnings')}${cell(s.skipped,'Skipped')}</div>
+    ${errs?`<div class="ilist"><strong style="font-size:12.5px;color:#991B1B">Must fix before staging</strong>${errs}</div>`:''}
+    ${warns?`<div class="ilist"><strong style="font-size:12.5px;color:#92400E">Warnings (tap to review)</strong>${warns}</div>`:''}
+    ${!errs&&!warns?'<div class="sub" style="margin-top:8px">All checks passed — ready to stage.</div>':''}
+    <div class="row2"><button class="no" id="imCancel">Back</button>
+      <button class="go" id="imGo" ${v.ok?'':'disabled'}>Stage ${s.total} to WHIMS</button></div>
+  </div></div>`;
+  const host=document.createElement('div'); host.id='imodalHost'; host.innerHTML=html; document.body.appendChild(host);
+  const close=()=>{ const h=document.getElementById('imodalHost'); if(h) h.remove(); };
+  document.getElementById('imCancel').addEventListener('click',close);
+  document.getElementById('imodalScrim').addEventListener('click',e=>{ if(e.target.id==='imodalScrim') close(); });
+  document.addEventListener('keydown',function esc1(ev){ if(ev.key==='Escape'){ close(); document.removeEventListener('keydown',esc1); } });
+  host.querySelectorAll('[data-jump]').forEach(el=>el.addEventListener('click',()=>{ close(); const c=document.querySelector('.card[data-id="'+el.dataset.jump+'"]'); if(c){ c.classList.add('open'); c.scrollIntoView({behavior:'smooth',block:'center'}); } }));
+  const go=document.getElementById('imGo'); if(go) go.addEventListener('click',()=>{ close(); stageBatch(); });
+}
+function rowName(id){ const r=S.rows.find(x=>x.id===id); return r?(r.name||'(unnamed)'):''; }
+
+/* ===================================================================
+   PHASE 2c-2  —  performance & reliability (additive, gated)
+   Virtual list windowing · offline queue · ETA · accessibility.
+   Small lists (≤40) render exactly as before — zero behaviour change.
+   =================================================================== */
+(function injectPerfCSS(){ const css=`
+  .proc-bar{height:8px;border-radius:999px;background:var(--field,#eef1f8);overflow:hidden;margin:14px auto 2px;max-width:320px;width:100%;}
+  .proc-bar i{display:block;height:100%;background:var(--brand,#2A3C78);transition:width .25s;width:0;}
+  .proc-eta{font-size:12px;color:var(--muted,#76809b);margin-top:4px;}
+  .pending-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#FEF3C7;color:#92400E;border-radius:12px;padding:10px 12px;margin:0 0 14px;font-size:13px;}
+  .pending-banner .ra{display:flex;gap:6px;} .pending-banner button{border:none;border-radius:8px;padding:7px 11px;font-weight:600;font-size:12px;cursor:pointer;}
+  .pending-banner .go{background:#92400E;color:#fff;} .pending-banner .no{background:rgba(146,64,14,.15);color:#92400E;}
+  *:focus-visible{outline:2px solid var(--brand,#2A3C78);outline-offset:2px;}
+  html[data-contrast=high]{--muted:#1b2440;}
+  html[data-contrast=high] .card,html[data-contrast=high] input,html[data-contrast=high] .cap-card,html[data-contrast=high] select{border-color:#1b2440 !important;}
+  html[data-contrast=high] .sub,html[data-contrast=high] .stats,html[data-contrast=high] p{color:#1b2440 !important;}
+  html[data-contrast=high] *:focus-visible{outline:3px solid #000;outline-offset:2px;}
+  html[data-font=large] body{font-size:18px;}
+  html[data-font=large] .card input,html[data-font=large] .f label,html[data-font=large] .name,html[data-font=large] p,html[data-font=large] .v-state,html[data-font=large] .stats{font-size:1.06em;}
+  html[data-font=large] h1{font-size:1.5em;}
+  html[data-motion=reduced] *,html[data-motion=reduced] *::before,html[data-motion=reduced] *::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;scroll-behavior:auto !important;}
+  @media (prefers-reduced-motion: reduce){ *{animation-duration:.001ms !important;transition-duration:.001ms !important;} }
+`; const st=document.createElement('style'); st.id='perf-css'; st.textContent=css; document.head.appendChild(st); })();
+
+/** Format remaining time from progress. @returns {string} */
+function etaFmt(done,total,elapsedMs){ if(done<=0||total<=0||done>=total) return '';
+  const rem=Math.round((elapsedMs/done)*(total-done)/1000);
+  if(rem<1) return '<1s'; if(rem<60) return rem+'s'; const m=Math.floor(rem/60),s=rem%60; return m+'m'+(s?' '+s+'s':''); }
+
+/* ---- virtual list (window-scroll windowing for big review lists) ---- */
+const VList=(function(){
+  const HID=72, HEX=392, OVER=900, MIN=40;
+  /** Pure window math. @returns {{start:number,end:number,padTop:number,padBottom:number,total:number}} */
+  function computeWindow(scrollTop, viewportH, heights, overscan){
+    const n=heights.length; const off=new Array(n+1); off[0]=0;
+    for(let i=0;i<n;i++) off[i+1]=off[i]+heights[i];
+    const total=off[n];
+    const top=Math.max(0, scrollTop-overscan), bottom=scrollTop+viewportH+overscan;
+    let start=0; while(start<n && off[start+1]<=top) start++;
+    let end=start; while(end<n && off[end]<bottom) end++;
+    if(end<start) end=start;
+    return { start, end, padTop:off[start], padBottom:Math.max(0,total-off[end]), total };
+  }
+  /** Mount a windowed list. renderItem(item,i)->html, bindRoot(root) binds visible nodes. */
+  function mount(host, items, renderItem, bindRoot){
+    const heights=items.map(r=>(IntakeCore.tier(r)!=='high'&&r.action!=='skip')?HEX:HID);
+    host.style.position='relative';
+    function paint(){
+      try{
+        const top=host.offsetTop||0;
+        const scrollTop=Math.max(0,(window.scrollY||window.pageYOffset||0)-top);
+        const vh=window.innerHeight||800;
+        const win=computeWindow(scrollTop,vh,heights,OVER);
+        host.style.paddingTop=win.padTop+'px'; host.style.paddingBottom=win.padBottom+'px';
+        let h=''; for(let i=win.start;i<win.end;i++) h+=renderItem(items[i],i);
+        host.innerHTML=h; if(bindRoot) bindRoot(host);
+        let changed=false;
+        [...host.children].forEach(el=>{ const i=+el.getAttribute('data-vi'); const hh=el.offsetHeight;
+          if(hh && Math.abs(hh-heights[i])>4){ heights[i]=hh; changed=true; } });
+        if(changed){ // one correction pass so spacers settle
+          const w2=computeWindow(scrollTop,vh,heights,OVER);
+          host.style.paddingTop=w2.padTop+'px'; host.style.paddingBottom=Math.max(0,w2.padBottom)+'px';
+        }
+      }catch(e){ host.innerHTML=items.map(renderItem).join(''); if(bindRoot) bindRoot(host); }
+    }
+    let raf=0; const onScroll=()=>{ if(raf) return; raf=requestAnimationFrame(()=>{ raf=0; paint(); }); };
+    window.addEventListener('scroll',onScroll,{passive:true}); window.addEventListener('resize',onScroll,{passive:true});
+    window._vlCleanup=()=>{ window.removeEventListener('scroll',onScroll); window.removeEventListener('resize',onScroll); };
+    paint();
+  }
+  return { computeWindow, mount, MIN };
+})();
+window.VList=VList;
+
+/* ---- offline upload queue (auto-retry on reconnect) ---- */
+const OfflineQueue=(function(){
+  const KEY='wiseLensQueue';
+  function read(){ try{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }catch(e){ return []; } }
+  function write(q){ try{ localStorage.setItem(KEY,JSON.stringify(q)); }catch(e){} }
+  function enqueue(batch){ const q=read();
+    const item={ id:'Q'+Date.now().toString(36)+Math.floor(Math.random()*1e3).toString(36), createdAt:new Date().toISOString(),
+      rows:batch.rows, session:batch.session||null, tries:0 };
+    q.push(item); write(q); return item; }
+  function list(){ return read(); } function size(){ return read().length; }
+  function remove(id){ write(read().filter(x=>x.id!==id)); } function clear(){ write([]); }
+  /** Try to upload every queued batch. poster(rows)->{ok}. @returns {{sent:number,remaining:number}} */
+  async function flush(poster, onProgress){ const q=read(); let sent=0; const total=q.length;
+    for(const item of q.slice()){
+      let ok=false;
+      try{ const r=await poster(item.rows); ok=!!(r&&r.ok); }catch(e){ ok=false; }
+      if(ok){ remove(item.id); sent++; onProgress&&onProgress(sent,total,item); }
+      else { const all=read(); const f=all.find(x=>x.id===item.id); if(f){ f.tries=(f.tries||0)+1; write(all); } }
+    }
+    return { sent, remaining:read().length };
+  }
+  return { enqueue, list, size, remove, clear, flush, _KEY:KEY };
+})();
+window.OfflineQueue=OfflineQueue;
+
+async function flushQueue(){
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return;
+  if(!OfflineQueue.size()) return;
+  const res=await OfflineQueue.flush(async rows=>{ try{ return await post({action:'stageIntake',rows}); }catch(e){ return {ok:false}; } });
+  if(res.sent) toast('Uploaded '+res.sent+' queued intake'+(res.sent>1?'s':''));
+  if(S.screen==='capture') render();
+}
+function pendingBannerHtml(){ const n=OfflineQueue.size(); if(!n) return '';
+  return `<div class="pending-banner"><span>${n} intake${n>1?'s':''} waiting to upload</span>
+    <span class="ra"><button class="no" id="qCancel">Cancel</button><button class="go" id="qRetry">Retry now</button></span></div>`; }
+function bindPendingBanner(){ const r=document.getElementById('qRetry'), c=document.getElementById('qCancel');
+  if(r) r.addEventListener('click',flushQueue);
+  if(c) c.addEventListener('click',()=>{ if(confirm('Discard queued uploads?')){ OfflineQueue.clear(); render(); } }); }
+
+/* ---- accessibility (high contrast · large text · reduced motion) ---- */
+function applyA11y(){ const h=document.documentElement;
+  h.setAttribute('data-contrast', (typeof CFG!=='undefined'&&CFG.contrast==='high')?'high':'normal');
+  h.setAttribute('data-font', (typeof CFG!=='undefined'&&CFG.fontScale==='large')?'large':'normal');
+  h.setAttribute('data-motion', (typeof CFG!=='undefined'&&CFG.motion==='reduced')?'reduced':'full'); }
+function initA11yUI(){ const sheet=document.getElementById('sheet'); if(!sheet||document.getElementById('a11yBlock')) return;
+  const save=document.getElementById('saveSettings');
+  const sw=(id,label,on)=>`<div class="toggle"><div style="font-weight:600;font-size:14px">${label}</div><div class="switch ${on?'on':''}" id="${id}" role="switch" aria-checked="${on}" tabindex="0"><i></i></div></div>`;
+  const block=document.createElement('div'); block.id='a11yBlock';
+  block.innerHTML=`<div class="field-row" style="margin-top:6px"><label>Accessibility</label></div>`+
+    sw('a11yContrast','High contrast',CFG.contrast==='high')+
+    sw('a11yFont','Large text',CFG.fontScale==='large')+
+    sw('a11yMotion','Reduce motion',CFG.motion==='reduced');
+  if(save&&save.parentNode) save.parentNode.insertBefore(block,save); else sheet.appendChild(block);
+  const bind=(id,key,onVal,offVal)=>{ const el=document.getElementById(id); if(!el) return;
+    const toggle=()=>{ el.classList.toggle('on'); const on=el.classList.contains('on'); el.setAttribute('aria-checked',on);
+      CFG[key]=on?onVal:offVal; saveCfg(); applyA11y(); };
+    el.addEventListener('click',toggle);
+    el.addEventListener('keydown',e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggle(); } }); };
+  bind('a11yContrast','contrast','high','normal'); bind('a11yFont','fontScale','large','normal'); bind('a11yMotion','motion','reduced','full'); }
+
+/* ---- review cards: full render for small lists, windowed for big ones ---- */
+function mountCards(){ const host=document.getElementById('cards'); if(!host) return;
+  if(S.rows.length<=VList.MIN){ host.style.padding=''; host.innerHTML=S.rows.map(cardHtml).join(''); bindCards(host); return; }
+  VList.mount(host, S.rows,
+    (r,i)=>cardHtml(r).replace('<div class="card','<div data-vi="'+i+'" class="card'),
+    root=>bindCards(root)); }
+
+/* ===================================================================
+   BATCH ACTIONS  —  multi-select + bulk ops for large sessions.
+   Selection lives on the row model (r.sel), so it survives the
+   virtual-scroll mount/unmount cycle. The toolbar sits outside the
+   windowed #cards container, so it never gets unmounted.
+   =================================================================== */
+const Batch=(function(){
+  /** @param {Array} rows @returns {Array} selected rows (model order) */
+  function selected(rows){ return rows.filter(r=>r.sel); }
+  function count(rows){ let n=0; for(const r of rows) if(r.sel) n++; return n; }
+  function clear(rows){ rows.forEach(r=>{ r.sel=false; }); }
+  function all(rows,on){ rows.forEach(r=>{ if(r.action!=='skip'||!on) r.sel=!!on; }); }
+  /** Apply one field value to every selected row. @returns {number} affected */
+  function applyField(rows,field,val){ const s=selected(rows); s.forEach(r=>{ r[field]=val; }); return s.length; }
+  /** Mark selected rows as skip. @returns {number} */
+  function skip(rows){ const s=selected(rows); s.forEach(r=>{ r.action='skip'; r.sel=false; }); return s.length; }
+  /** Remove selected rows. @returns {Array} new rows array */
+  function del(rows){ return rows.filter(r=>!r.sel); }
+  /** Merge all selected into the earliest selected; sum quantities; skip the rest. @returns {?string} target id */
+  function merge(rows){ const s=selected(rows); if(s.length<2) return null;
+    const hasV=v=>v!==''&&v!=null&&String(v).trim()!=='';
+    const target=s[0];
+    let total=0, any=false; s.forEach(r=>{ if(hasV(r.qty)){ total+=Number(r.qty)||0; any=true; } }); // snapshot before mutation
+    for(let i=1;i<s.length;i++) IntakeCore.mergeRows(target,s[i]);   // fills blank fields, skips others
+    if(any) target.qty=total;                                        // explicit merge → total the quantities
+    clear(rows); target.sel=false; return target.id; }
+  return { selected, count, clear, all, applyField, skip, del, merge };
+})();
+window.Batch=Batch;
+
+(function injectBatchCSS(){ const css=`
+  .selbar{position:sticky;top:8px;z-index:30;background:var(--brand,#2A3C78);color:#fff;border-radius:14px;padding:10px 12px;margin:0 0 12px;box-shadow:0 8px 24px rgba(20,30,70,.22);}
+  .selbar .selinfo{display:flex;align-items:center;gap:10px;font-size:13px;margin-bottom:8px;}
+  .selbar .selinfo b{font-family:'JetBrains Mono',monospace;font-size:15px;}
+  .selbar .link{background:none;border:none;color:#dbe2ff;font-size:12px;font-weight:600;cursor:pointer;padding:2px 4px;text-decoration:underline;}
+  .selbar .selacts{display:flex;gap:6px;flex-wrap:wrap;}
+  .selbar .selacts button{border:none;border-radius:8px;padding:7px 10px;font-size:12px;font-weight:600;cursor:pointer;background:rgba(255,255,255,.16);color:#fff;}
+  .selbar .selacts button.danger{background:var(--bad,#C21F35);}
+  .selwrap{display:flex;align-items:center;padding-right:8px;}
+  .selbox{width:20px;height:20px;accent-color:var(--brand,#2A3C78);cursor:pointer;}
+  .card.selected{box-shadow:0 0 0 2px var(--brand,#2A3C78) inset;}
+  html[data-contrast=high] .selbar{background:#000;}
+`; const st=document.createElement('style'); st.id='batch-css'; st.textContent=css; document.head.appendChild(st); })();
+
+function selBarHtml(){ const n=Batch.count(S.rows); if(!n) return '';
+  return `<div class="selbar" role="region" aria-label="Bulk actions">
+    <div class="selinfo"><b>${n}</b> selected
+      <button class="link" data-bsel="all">Select all</button>
+      <button class="link" data-bsel="none">Clear</button></div>
+    <div class="selacts">
+      <button data-bact="merge">Merge</button>
+      <button data-bact="skip">Skip</button>
+      <button data-bact="delete" class="danger">Delete</button>
+      <button data-bact="supplier">Supplier</button>
+      <button data-bact="category">Category</button>
+      <button data-bact="potency">Potency</button>
+      <button data-bact="expiry">Expiry</button>
+    </div></div>`; }
+function refreshSelBar(){ const host=document.getElementById('selbar'); if(!host) return;
+  host.innerHTML=selBarHtml(); bindSelBar();
+  // reflect selection ring on any currently-mounted cards
+  document.querySelectorAll('#cards .card').forEach(c=>{ const r=S.rows.find(x=>x.id===c.dataset.id); if(r) c.classList.toggle('selected', !!r.sel); }); }
+function bindSelBar(){ const host=document.getElementById('selbar'); if(!host) return;
+  host.querySelectorAll('[data-bsel]').forEach(b=>b.addEventListener('click',()=>{
+    if(b.dataset.bsel==='all') Batch.all(S.rows,true); else Batch.clear(S.rows);
+    scheduleSave(); renderReview(); }));
+  host.querySelectorAll('[data-bact]').forEach(b=>b.addEventListener('click',()=>{
+    const a=b.dataset.bact;
+    if(a==='merge'){ const id=Batch.merge(S.rows); if(!id){ toast('Select at least 2 to merge'); return; } toast('Merged '+ (id?'':'') +'selected items'); scheduleSave(); renderReview(); }
+    else if(a==='skip'){ const n=Batch.skip(S.rows); toast('Skipped '+n+' item'+(n===1?'':'s')); scheduleSave(); renderReview(); }
+    else if(a==='delete'){ const n=Batch.count(S.rows); if(typeof confirm==='function'&&!confirm('Delete '+n+' selected item'+(n===1?'':'s')+' from this intake?')) return; S.rows=Batch.del(S.rows); toast('Deleted '+n+' item'+(n===1?'':'s')); scheduleSave(); renderReview(); }
+    else applyValueModal(a); }));
+}
+/** Modal to type one value and apply to all selected rows. */
+function applyValueModal(field){
+  const meta={ supplier:{label:'Apply supplier / brand',ph:'e.g. SBL'},
+    category:{label:'Apply category',ph:'e.g. MT'},
+    potency:{label:'Apply potency',ph:'e.g. 200 / MT / 6X'},
+    expiry:{label:'Apply expiry',ph:'YYYY-MM'} }[field];
+  const n=Batch.count(S.rows);
+  const html=`<div class="imodal-scrim" id="imodalHost2"><div class="imodal" role="dialog" aria-modal="true" aria-label="${meta.label}">
+    <h2>${meta.label}</h2><div class="sub">Applies to ${n} selected item${n===1?'':'s'}.</div>
+    <div class="f wide" style="margin-top:10px"><input id="bvVal" class="mono" placeholder="${meta.ph}" aria-label="${meta.label}" style="width:100%"></div>
+    <div class="row2"><button class="no" id="bvCancel">Cancel</button><button class="go" id="bvGo">Apply to ${n}</button></div>
+  </div></div>`;
+  const host=document.createElement('div'); host.innerHTML=html; document.body.appendChild(host);
+  const close=()=>host.remove();
+  const inp=host.querySelector('#bvVal'); if(inp&&inp.focus) try{ inp.focus(); }catch(e){}
+  host.querySelector('#bvCancel').addEventListener('click',close);
+  host.querySelector('#imodalHost2').addEventListener('click',e=>{ if(e.target.id==='imodalHost2') close(); });
+  host.querySelector('#bvGo').addEventListener('click',()=>{
+    const val=(host.querySelector('#bvVal').value||'').trim();
+    if(field==='expiry' && val && !/^\d{4}-\d{2}$/.test(val)){ toast('Use YYYY-MM for expiry'); return; }
+    const cnt=Batch.applyField(S.rows,field,val); Batch.clear(S.rows);
+    close(); toast('Updated '+cnt+' item'+(cnt===1?'':'s')); scheduleSave(); renderReview();
+  });
+}
+
 /* ---- boot ---- */
-render();
+(function bootResume(){
+  applyA11y(); initA11yUI();
+  if(typeof window!=='undefined') window.addEventListener('online', flushQueue);
+  render();
+  flushQueue();
+})();
 </script>
 </body>
 </html>
