@@ -306,24 +306,26 @@ function clearSession(){ CFG.token=''; CFG.user=''; saveCfg(); }
 
 /* ---- app state ---- */
 const S = {
-  screen:'capture',     // capture | processing | review | done
-  shots:[],             // {id, kind:'bill'|'cover', dataUrl, name}
+  screen:'capture',     // capture | voice | processing | review | done
+  shots:[],             // {id, kind:'bill'|'cover', dataUrl, name, captureMode}
   rows:[],              // reconciled review rows
   inventory:null,       // cached inventory snapshot
   procText:'',
+  voice:null,           // transient voice-capture state
 };
 let _id=0; const uid=p=>`${p}${(++_id).toString(36)}${Date.now().toString(36).slice(-3)}`;
 
 /* ===================================================================
    1. CAPTURE
    =================================================================== */
-function addShots(kind, files){
+function addShots(kind, files, captureMode){
+  const mode = captureMode || 'CAMERA';
   const list=[...files];
   let pending=list.length;
   if(!pending) return;
   list.forEach(file=>{
     downscale(file, 1600, 0.82).then(dataUrl=>{
-      S.shots.push({ id:uid('s'), kind, dataUrl, name:file.name||`${kind} photo` });
+      S.shots.push({ id:uid('s'), kind, dataUrl, name:file.name||`${kind} photo`, captureMode:mode });
       if(--pending===0) render();
     }).catch(()=>{ if(--pending===0) render(); });
   });
@@ -362,7 +364,7 @@ async function runExtract(){
       S.procText=`Reading ${sh.kind} ${i+1} of ${S.shots.length}…`;
       paintProc();
       const data = await extractOne(sh);
-      extractions.push({kind:sh.kind, data});
+      extractions.push({kind:sh.kind, data, captureMode:sh.captureMode||'CAMERA'});
     }
     S.rows = reconcile(extractions, S.inventory);
     S.screen='review'; render();
@@ -383,7 +385,7 @@ async function getInventory(){
   if(isDemo()) return DEMO_INVENTORY;
   const r = await post({ action:'inventory' });
   if(!r.ok) throw new Error(r.error||'inventory failed');
-  return r.items||[];
+  return r.data||r.items||[];   // merged WHIMS backend returns {data}; standalone returned {items}
 }
 async function post(body){
   const r = await fetch(CFG.execUrl, {
@@ -415,11 +417,12 @@ async function login(username, password){
 function reconcile(extractions, inventory){
   const billLines=[], covers=[];
   extractions.forEach(e=>{
+    const cm=e.captureMode||'CAMERA';
     if(e.kind==='bill' && e.data){
       const sup=e.data.supplier||'';
-      (e.data.lines||[]).forEach(l=> billLines.push(Object.assign({supplier:sup}, l)));
+      (e.data.lines||[]).forEach(l=> billLines.push(Object.assign({supplier:sup, captureMode:cm}, l)));
     } else if(e.kind==='cover' && e.data){
-      covers.push(e.data);
+      covers.push(Object.assign({captureMode:cm}, e.data));
     }
   });
 
@@ -468,6 +471,7 @@ function makeRow(line, cover, origin, inventory){
     batch: cover ? (cover.batch||'') : '',    // shown as aid only, never staged
     confidence: line && cover ? 'high' : (line||cover ? 'med' : 'low'),
     action:'', matchId:'', matchName:'', codeFamily:'',
+    captureMode: pick(line&&line.captureMode, cover&&cover.captureMode) || 'CAMERA',
   };
   // match against live inventory
   const m = matchInventory(r, inventory);
@@ -545,8 +549,16 @@ function num(v){ const n=parseFloat(v); return isNaN(n)?'':n; }
    3. STAGE TO WHIMS
    =================================================================== */
 async function stageBatch(){
+  const label = r => {
+    if(r.origin==='voice') return 'Voice';
+    const base = r.origin==='both'?'Reconciled':(r.origin==='bill'?'Bill':'Cover');
+    const cm = r.captureMode==='GALLERY'?' (gallery)':(r.captureMode==='CAMERA'?'':' ('+String(r.captureMode||'').toLowerCase()+')');
+    return base+cm;
+  };
   const rows=S.rows.filter(r=>r.action!=='skip').map(r=>({
-    source: r.origin==='both'?'Reconciled':(r.origin==='bill'?'Bill':'Cover'),
+    source: label(r),
+    entrySource:'WISE_LENS',                       // audit: who created it
+    captureMode: r.captureMode||'CAMERA',          // audit: CAMERA / GALLERY / VOICE
     action: r.action==='receive'?'RECEIVE':'ADD_NEW',
     matchedId: r.matchId||'',
     proposedId: r.action==='add'?(r.codeFamily||''):'',
@@ -594,6 +606,7 @@ function render(){
   if(needsLogin()){ renderLogin(); dock.innerHTML=''; setSteps(); return; }
   setSteps();
   if(S.screen==='capture')    renderCapture();
+  else if(S.screen==='voice')      renderVoice();
   else if(S.screen==='processing') renderProcessing();
   else if(S.screen==='review')     renderReview();
   else if(S.screen==='done')       renderDone();
@@ -636,22 +649,33 @@ function setSteps(){
 function renderCapture(){
   main.innerHTML=`
     <div class="hero">
-      <h1>Photograph the delivery</h1>
-      <p>Snap the supplier bill and the medicine covers. Lens reads both and lines them up for WHIMS.</p>
+      <h1>Add to inventory</h1>
+      <p>Photograph the supplier bill and medicine covers, or just speak the details. Lens lines everything up for WHIMS.</p>
     </div>
     <div class="cap-grid">
-      <label class="cap-card bill">
+      <div class="cap-card bill">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></div>
         <h3>Add bill</h3>
         <div class="sub">Quantity &amp; cost</div>
-        <input type="file" accept="image/*" capture="environment" multiple data-kind="bill">
-      </label>
-      <label class="cap-card cover">
+        <div class="cap-actions">
+          <label class="cap-mini">📷 Photo<input type="file" accept="image/*" capture="environment" multiple data-kind="bill" data-mode="CAMERA"></label>
+          <label class="cap-mini">🖼 Gallery<input type="file" accept="image/*" multiple data-kind="bill" data-mode="GALLERY"></label>
+        </div>
+      </div>
+      <div class="cap-card cover">
         <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 3v4h8V3M9 12h6M9 16h4"/></svg></div>
         <h3>Add cover</h3>
         <div class="sub">Identity &amp; expiry</div>
-        <input type="file" accept="image/*" capture="environment" multiple data-kind="cover">
-      </label>
+        <div class="cap-actions">
+          <label class="cap-mini">📷 Photo<input type="file" accept="image/*" capture="environment" multiple data-kind="cover" data-mode="CAMERA"></label>
+          <label class="cap-mini">🖼 Gallery<input type="file" accept="image/*" multiple data-kind="cover" data-mode="GALLERY"></label>
+        </div>
+      </div>
+      <button class="cap-card voice" id="voiceCard" type="button">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg></div>
+        <h3>Voice entry</h3>
+        <div class="sub">Speak the details</div>
+      </button>
     </div>
     ${S.shots.length?`
       <div class="section-eyebrow" style="margin-top:24px">In this batch · ${S.shots.length}</div>
@@ -659,8 +683,10 @@ function renderCapture(){
     `:''}
   `;
   main.querySelectorAll('input[type=file]').forEach(inp=>{
-    inp.addEventListener('change', e=>{ addShots(inp.dataset.kind, e.target.files); inp.value=''; });
+    inp.addEventListener('change', e=>{ addShots(inp.dataset.kind, e.target.files, inp.dataset.mode); inp.value=''; });
   });
+  const vc=document.getElementById('voiceCard');
+  if(vc) vc.addEventListener('click', ()=> VoiceLens.open());
   main.querySelectorAll('.shot .x').forEach(b=>{
     b.addEventListener('click',()=>{ S.shots=S.shots.filter(s=>s.id!==b.dataset.id); render(); });
   });
@@ -698,7 +724,7 @@ function renderReview(){
 }
 function cardHtml(r){
   const sev = r.action==='skip' ? '' : (r.confidence==='high'?'ok':(r.confidence==='med'?'warn':'bad'));
-  const originLabel = r.origin==='both'?'Bill + Cover':(r.origin==='bill'?'Bill only':'Cover only');
+  const originLabel = r.origin==='voice'?'Voice':(r.origin==='both'?'Bill + Cover':(r.origin==='bill'?'Bill only':'Cover only'));
   const matchChip = r.matchId
     ? `<span class="chip match"><span class="dot"></span>${esc(r.matchId)}</span>`
     : `<span class="chip new">＋ NEW · ${esc(r.codeFamily)}</span>`;
@@ -860,6 +886,270 @@ function demoExtract(kind){
     {name:'Gelsemium Sempervirens', potency:'200', pack:'30 ML', mfd:'2025-05', expiry:'2030-05', barcode:'8909876543210', batch:'G7782', brand:'SBL'},
   ];
   return covers[(demoExtract._i++)%covers.length];
+}
+
+/* ===================================================================
+   VOICE LENS  —  speech intake behind a swappable provider interface
+   -------------------------------------------------------------------
+   SpeechProvider contract (every engine implements this, so the UI and
+   the transcript→JSON logic never change when the engine is swapped):
+     id            string
+     label         string
+     needsKey      boolean   (cloud engines proxy their key server-side)
+     isSupported() boolean
+     start(h)      begin; emits via h.onpartial / h.onfinal / h.onstart
+                   / h.onerror / h.onend
+     pause()/resume()/stop()/abort()
+   Default: Web Speech API (on-device, free). Whisper / OpenAI / Gemini /
+   Google / Azure register as CloudSTTProvider adapters that record audio
+   and POST {action:'transcribe', provider, audio} to the backend proxy.
+   =================================================================== */
+(function injectVoiceCSS(){
+  const css=`
+  .cap-card.voice{ cursor:pointer; }
+  .cap-actions{ display:flex; gap:8px; margin-top:10px; }
+  .cap-mini{ flex:1; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    font-size:12.5px; font-weight:600; padding:8px 6px; border-radius:10px; cursor:pointer;
+    background:var(--field,#eef1f8); color:var(--ink,#1b2440); position:relative; overflow:hidden; }
+  .cap-mini input{ position:absolute; inset:0; opacity:0; cursor:pointer; }
+  .v-wrap{ display:flex; flex-direction:column; align-items:center; gap:18px; padding:14px 4px 24px; }
+  .v-prov{ width:100%; max-width:420px; }
+  .v-prov select{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line,#dfe3ef);
+    background:var(--field,#fff); font-size:13.5px; }
+  .v-prov .hint{ font-size:11.5px; color:var(--muted,#76809b); margin-top:4px; }
+  .v-mic{ width:104px; height:104px; border-radius:50%; border:none; cursor:pointer; color:#fff;
+    background:radial-gradient(circle at 50% 35%, #C21F35, #8d1626); box-shadow:0 10px 30px rgba(194,31,53,.35);
+    display:grid; place-items:center; transition:transform .12s; }
+  .v-mic:active{ transform:scale(.94); }
+  .v-mic.live{ animation:vpulse 1.4s ease-out infinite; }
+  @keyframes vpulse{ 0%{ box-shadow:0 0 0 0 rgba(194,31,53,.45);} 100%{ box-shadow:0 0 0 26px rgba(194,31,53,0);} }
+  .v-mic svg{ width:42px; height:42px; }
+  .v-time{ font-family:'JetBrains Mono',monospace; font-size:30px; font-weight:600; color:var(--ink,#1b2440); }
+  .v-state{ font-size:13px; color:var(--muted,#76809b); }
+  canvas.v-wave{ width:100%; max-width:420px; height:58px; }
+  .v-tx{ width:100%; max-width:420px; min-height:54px; background:var(--field,#f3f5fb); border:1px solid var(--line,#e3e7f1);
+    border-radius:12px; padding:12px 14px; font-size:14px; color:var(--ink,#1b2440); }
+  .v-tx .partial{ color:var(--muted,#9aa3bd); }
+  .v-parsed{ width:100%; max-width:420px; background:#fff; border:1px solid var(--line,#e3e7f1); border-radius:14px; padding:14px; }
+  .v-parsed .kv{ display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:13.5px; border-bottom:1px dashed var(--line,#eceff6); }
+  .v-parsed .kv:last-child{ border-bottom:none; } .v-parsed .kv b{ color:var(--muted,#76809b); font-weight:600; }
+  .v-btns{ display:flex; gap:10px; width:100%; max-width:420px; }
+  .v-btns button{ flex:1; padding:12px; border-radius:12px; border:none; font-weight:600; font-size:14px; cursor:pointer; }
+  .v-go{ background:var(--brand,#2A3C78); color:#fff; } .v-ghost{ background:var(--field,#eef1f8); color:var(--ink,#1b2440); }
+  html[data-theme="dark"] .cap-mini,html[data-theme="dark"] .v-tx,html[data-theme="dark"] .v-prov select{ background:rgba(255,255,255,.06); color:#E8ECF7; }
+  `;
+  const st=document.createElement('style'); st.id='voice-css'; st.textContent=css; document.head.appendChild(st);
+})();
+
+/* ---- transcript → structured medicine JSON (same shape OCR produces) ---- */
+const VoiceParser=(function(){
+  const NUM={zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,sixteen:16,seventeen:17,eighteen:18,nineteen:19,twenty:20,thirty:30,forty:40,fifty:50,sixty:60,seventy:70,eighty:80,ninety:90};
+  const SCALE={hundred:100,thousand:1000};
+  const MONTH={january:1,jan:1,february:2,feb:2,march:3,mar:3,april:4,apr:4,may:5,june:6,jun:6,july:7,jul:7,august:8,aug:8,september:9,sept:9,sep:9,october:10,oct:10,november:11,nov:11,december:12,dec:12};
+  const BRANDS=['sbl','bakson','reckeweg','schwabe','adel','allen','haslab','bjain','wheezal','medisynth','hapdco','lords','bhargava','fourrts'];
+  const FILLER=new Set(['of','the','a','an','and','please','bottle','bottles','bottls','nos','no','number','units','unit','vials','vial','pcs','pieces','from','medicine','homeopathy','homeo','expiry','expires','expire','exp','expiring','best','before','potency','pack','size','dilution']);
+  function wnum(words){ let total=0,cur=0,seen=false;
+    for(const w of words){ if(w in NUM){ cur+=NUM[w]; seen=true; }
+      else if(w in SCALE){ cur=(cur||1)*SCALE[w]; if(SCALE[w]===1000){ total+=cur; cur=0; } seen=true; }
+      else if(/^\d+$/.test(w)){ cur+=parseInt(w,10); seen=true; } else break; }
+    return seen? total+cur : null; }
+  function yearFrom(words){ words=words.filter(Boolean); if(!words.length) return '';
+    if(/^\d{4}$/.test(words[0])) return words[0];
+    if(words[0] in NUM){ const a=NUM[words[0]];
+      if(a>=19&&a<=20){ const rest=words.slice(1).filter(w=>w in NUM||/^\d+$/.test(w));
+        let low=0; rest.forEach(w=>{ low+=(w in NUM)?NUM[w]:parseInt(w,10); });
+        if(rest.length) return String(a*100+low); }
+      const n=wnum(words); if(n&&n>=1900&&n<=2100) return String(n); }
+    return ''; }
+  function parse(t){
+    const raw=String(t||'').trim();
+    let s=' '+raw.toLowerCase().replace(/[.,/]/g,' ').replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ')+' ';
+    const out={name:'',potency:'',pack:'',qty:'',supplier:'',expiry:'',raw};
+    // EXPIRY (month + year, or 2030-03)
+    let me=s.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+([a-z0-9]+(?:\s+[a-z0-9]+){0,2})/);
+    if(me){ const mon=MONTH[me[1]]||MONTH[me[1].slice(0,3)]; const yr=yearFrom(me[2].trim().split(' '));
+      if(mon&&yr) out.expiry=yr+'-'+String(mon).padStart(2,'0'); s=s.replace(me[0],' '); }
+    else { const my=s.match(/\b(20\d{2})[\s-]*(0?[1-9]|1[0-2])\b/); if(my){ out.expiry=my[1]+'-'+String(my[2]).padStart(2,'0'); s=s.replace(my[0],' '); } }
+    // PACK (number + ml / g)
+    let mp=s.match(/\b((?:one|two|three|four|five|six|seven|eight|nine|ten|hundred|\d+)(?:\s+hundred)?)\s*(ml|millilit(?:re|er)s?|g|gram?s?|gm)\b/);
+    if(mp){ const n=wnum(mp[1].trim().split(' '))||parseInt(mp[1],10); const unit=/^m/.test(mp[2])?'ML':'G';
+      if(n) out.pack=n+' '+unit; s=s.replace(mp[0],' '); }
+    // POTENCY
+    let pot='', mc=null;
+    if(/\bmother\s+tincture\b|\bmother\b|\btincture\b|\bq\b/.test(s)) pot='MT';
+    let mx=s.match(/\b(\d+)\s*x\b/); if(!pot&&mx) pot=mx[1]+'X';
+    let mm=s.match(/\b(\d+|one|two|three|four|five|six)\s*m\b/); if(!pot&&mm){ const n=(mm[1] in NUM)?NUM[mm[1]]:mm[1]; pot=n+'M'; }
+    let mlm=s.match(/\blm\s*(\d+)\b/); if(!pot&&mlm) pot='LM'+mlm[1];
+    mc=s.match(/\b(3|6|9|12|15|18|24|30|200|1000)\s*(?:c|ch|cn|potency)?\b/); if(!pot&&mc) pot=mc[1];
+    if(pot){ out.potency=pot;
+      s=s.replace(/\bmother\s+tincture\b|\bmother\b|\btincture\b|\bq\b/g,' ').replace(/\b\d+\s*x\b/g,' ')
+         .replace(/\blm\s*\d+\b/g,' ').replace(/\b(\d+)\s*m\b/g,' ');
+      if(mc) s=s.replace(new RegExp('\\b'+mc[1]+'\\b'),' '); }
+    // QTY (n bottles / leading n)
+    let mq=s.match(/\b((?:\d+)|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty)\s*(?:bottles?|bottls?|nos|units?|vials?|pcs?|pieces?)\b/);
+    if(mq){ out.qty=(mq[1] in NUM)?NUM[mq[1]]:parseInt(mq[1],10); s=s.replace(mq[0],' '); }
+    else { const lead=s.match(/^\s*((?:\d+)|one|two|three|four|five|six|seven|eight|nine|ten)\b/);
+      if(lead){ out.qty=(lead[1] in NUM)?NUM[lead[1]]:parseInt(lead[1],10); s=s.replace(lead[0],' '); } }
+    // SUPPLIER (from <brand>)
+    let msup=s.match(/\bfrom\s+([a-z]+)(?:\s+([a-z]+))?/);
+    if(msup){ let sup=msup[1];
+      if(BRANDS.indexOf(sup)>=0) sup=sup.toUpperCase();
+      else sup=(msup[1]+(msup[2]?' '+msup[2]:'')).trim().toUpperCase();
+      out.supplier=sup; s=s.replace(msup[0],' '); }
+    // NAME (leftover words minus fillers/units/lone numbers)
+    const words=s.split(/\s+/).filter(w=>w&&!FILLER.has(w)&&!(w in SCALE));
+    const nameWords=words.filter(w=>!/^(ml|g|gram?s?|gm|x|m|c|ch|cn)$/.test(w)&&!/^\d+$/.test(w));
+    out.name=nameWords.map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' ').trim();
+    return out;
+  }
+  return { parse };
+})();
+
+/* ---- speech providers ---- */
+function WebSpeechProvider(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  let rec=null, manualStop=false, h={};
+  return {
+    id:'web-speech', label:'Browser · Web Speech (on-device, free)', needsKey:false,
+    isSupported(){ return !!SR; },
+    start(handlers){ h=handlers||{}; if(!SR){ h.onerror&&h.onerror(new Error('This browser has no speech recognition — try Chrome, or a cloud engine')); return; }
+      manualStop=false; rec=new SR(); rec.lang=(h.lang)||'en-IN'; rec.interimResults=true; rec.continuous=true;
+      rec.onresult=e=>{ let fin='',intr=''; for(let i=e.resultIndex;i<e.results.length;i++){ const r=e.results[i]; (r.isFinal?fin+=r[0].transcript:intr+=r[0].transcript); }
+        if(fin&&h.onfinal) h.onfinal(fin); if(intr&&h.onpartial) h.onpartial(intr); };
+      rec.onerror=e=>{ h.onerror&&h.onerror(new Error(e.error||'speech error')); };
+      rec.onend=()=>{ if(!manualStop){ try{ rec.start(); }catch(e){} } else h.onend&&h.onend(); };
+      try{ rec.start(); h.onstart&&h.onstart(); }catch(e){ h.onerror&&h.onerror(e); } },
+    pause(){ manualStop=true; if(rec) try{ rec.stop(); }catch(e){} },
+    resume(){ this.start(h); },
+    stop(){ manualStop=true; if(rec) try{ rec.stop(); }catch(e){} h.onend&&h.onend(); return Promise.resolve(); },
+    abort(){ manualStop=true; if(rec) try{ rec.abort(); }catch(e){} }
+  };
+}
+function blobToB64(blob){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',').pop()); r.onerror=rej; r.readAsDataURL(blob); }); }
+function CloudSTTProvider(id,label){
+  let media=null, chunks=[], stream=null, h={};
+  const sup=()=>!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
+  return {
+    id, label, needsKey:true,
+    isSupported(){ return sup(); },
+    async start(handlers){ h=handlers||{}; if(!sup()){ h.onerror&&h.onerror(new Error('Audio recording not supported here')); return; }
+      try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); media=new MediaRecorder(stream); chunks=[];
+        media.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+        media.start(); h.onstart&&h.onstart(); h.onpartial&&h.onpartial('Listening… cloud transcription runs after you stop.');
+      }catch(e){ h.onerror&&h.onerror(e); } },
+    pause(){ if(media&&media.state==='recording') media.pause(); },
+    resume(){ if(media&&media.state==='paused') media.resume(); },
+    async stop(){ if(!media){ h.onend&&h.onend(); return; }
+      await new Promise(res=>{ media.onstop=res; try{ media.stop(); }catch(e){ res(); } });
+      if(stream) stream.getTracks().forEach(t=>t.stop());
+      try{ const blob=new Blob(chunks,{type:(media&&media.mimeType)||'audio/webm'}); const b64=await blobToB64(blob);
+        const r=await post({action:'transcribe', provider:id, audio:b64, mime:blob.type});
+        if(!r||!r.ok) throw new Error((r&&r.error)||'transcription failed');
+        const text=(r.data&&(r.data.text||r.data.transcript))||r.text||'';
+        h.onfinal&&h.onfinal(text);
+      }catch(e){ h.onerror&&h.onerror(new Error(e.message+' — add the backend "transcribe" action, or use Browser voice')); }
+      h.onend&&h.onend(); },
+    abort(){ if(media) try{ media.stop(); }catch(e){} if(stream) stream.getTracks().forEach(t=>t.stop()); }
+  };
+}
+
+const VoiceLens=(function(){
+  const providers={}; let activeId='web-speech';
+  function register(p){ providers[p.id]=p; }
+  register(WebSpeechProvider());
+  [['whisper','OpenAI Whisper (cloud)'],['openai','OpenAI Speech (cloud)'],['gemini','Google Gemini (cloud)'],
+   ['google','Google Speech-to-Text (cloud)'],['azure','Azure Speech (cloud)']].forEach(p=>register(CloudSTTProvider(p[0],p[1])));
+  function active(){ return providers[activeId]; }
+  function use(id){ if(providers[id]){ activeId=id; if(S.voice) S.voice.provider=id; } }
+  function list(){ return Object.keys(providers).map(id=>({id,label:providers[id].label,supported:providers[id].isSupported(),needsKey:providers[id].needsKey})); }
+  function open(){
+    if(!providers[activeId].isSupported()){ const f=Object.keys(providers).find(id=>providers[id].isSupported()); if(f) activeId=f; }
+    S.voice={status:'idle',transcript:'',partial:'',seconds:0,parsed:null,provider:activeId};
+    S.screen='voice'; render();
+  }
+  return { register, use, active, list, providers, open, parse:VoiceParser.parse, get activeId(){ return activeId; } };
+})();
+window.VoiceLens=VoiceLens; window.VoiceParser=VoiceParser;   // public API (swap engine, reuse parser)
+
+/* ---- voice screen + recorder controls ---- */
+let _vTimer=null,_vStream=null,_vAudioCtx=null,_vRAF=null;
+function fmtTime(s){ const m=Math.floor(s/60),ss=s%60; return String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0'); }
+function vTick(){ if(!S.voice) return; S.voice.seconds++; const el=document.getElementById('vTime'); if(el) el.textContent=fmtTime(S.voice.seconds); }
+function paintTranscript(){ const el=document.getElementById('vTx'); if(!el||!S.voice) return;
+  el.innerHTML=esc(S.voice.transcript)+(S.voice.partial?' <span class="partial">'+esc(S.voice.partial)+'</span>':'')||'<span class="partial">…</span>'; }
+async function startViz(){ try{
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) return;
+  _vStream=await navigator.mediaDevices.getUserMedia({audio:true});
+  const AC=window.AudioContext||window.webkitAudioContext; if(!AC) return;
+  _vAudioCtx=new AC(); const src=_vAudioCtx.createMediaStreamSource(_vStream); const an=_vAudioCtx.createAnalyser(); an.fftSize=256; src.connect(an);
+  const cv=document.getElementById('vWave'); if(!cv) return; const g=cv.getContext('2d'); const buf=new Uint8Array(an.frequencyBinCount);
+  const draw=()=>{ _vRAF=requestAnimationFrame(draw); an.getByteFrequencyData(buf); g.clearRect(0,0,cv.width,cv.height);
+    const bars=32, step=Math.max(1,Math.floor(buf.length/bars)), w=cv.width/bars;
+    for(let i=0;i<bars;i++){ const v=buf[i*step]/255, hh=Math.max(3,v*cv.height);
+      g.fillStyle='rgba(42,60,120,'+(0.3+v*0.7)+')'; g.fillRect(i*w+1,(cv.height-hh)/2,w-2,hh); } };
+  draw();
+}catch(e){} }
+function stopViz(){ if(_vRAF) cancelAnimationFrame(_vRAF); _vRAF=null; if(_vAudioCtx){ try{ _vAudioCtx.close(); }catch(e){} _vAudioCtx=null; }
+  if(_vStream){ _vStream.getTracks().forEach(t=>t.stop()); _vStream=null; } }
+
+function voiceStart(){ const p=VoiceLens.active(); S.voice.status='recording'; S.voice.partial='';
+  renderVoice(); clearInterval(_vTimer); _vTimer=setInterval(vTick,1000); startViz();
+  p.start({ lang:'en-IN',
+    onpartial:t=>{ S.voice.partial=t; paintTranscript(); },
+    onfinal:t=>{ S.voice.transcript=(S.voice.transcript+' '+t).trim(); S.voice.partial=''; paintTranscript(); },
+    onerror:e=>{ toast(e.message||'Voice error'); clearInterval(_vTimer); stopViz(); if(S.voice){ S.voice.status='idle'; renderVoice(); } },
+    onstart:()=>{}, onend:()=>{} }); }
+function voicePause(){ const p=VoiceLens.active(); if(p.pause) p.pause(); S.voice.status='paused'; clearInterval(_vTimer); stopViz(); renderVoice(); }
+function voiceResume(){ const p=VoiceLens.active(); S.voice.status='recording'; clearInterval(_vTimer); _vTimer=setInterval(vTick,1000); startViz();
+  if(p.resume) p.resume(); else voiceStart(); renderVoice(); }
+async function voiceStop(){ const p=VoiceLens.active(); S.voice.status='processing'; renderVoice(); clearInterval(_vTimer); stopViz();
+  try{ await p.stop(); }catch(e){}
+  setTimeout(()=>{ if(!S.voice) return; const full=(S.voice.transcript+' '+(S.voice.partial||'')).trim();
+    S.voice.transcript=full; S.voice.partial=''; S.voice.parsed=VoiceLens.parse(full); S.voice.status='done'; renderVoice(); }, 350); }
+async function voiceAdd(){ const pr=S.voice&&S.voice.parsed;
+  if(!pr||!pr.name){ toast('Couldn’t catch a medicine name — record again'); return; }
+  if(!S.inventory){ try{ S.inventory=await getInventory(); }catch(e){ S.inventory=[]; } }
+  const line={ name:pr.name, potency:pr.potency, pack:pr.pack, qty:pr.qty, unitCost:'', supplier:pr.supplier, captureMode:'VOICE' };
+  const row=makeRow(line, null, 'voice', S.inventory);
+  row.expiry=pr.expiry||''; row.captureMode='VOICE';
+  S.rows.push(row); S.voice=null; S.screen='review'; render(); toast('Added — review and stage');
+}
+function voiceBack(){ const p=VoiceLens.active(); if(p&&p.abort) try{ p.abort(); }catch(e){} clearInterval(_vTimer); stopViz(); S.voice=null; S.screen='capture'; render(); }
+
+function renderVoice(){
+  const v=S.voice||{status:'idle',seconds:0,transcript:'',partial:''};
+  const provs=VoiceLens.list();
+  const opts=provs.map(p=>`<option value="${p.id}" ${p.id===VoiceLens.activeId?'selected':''} ${p.supported?'':'disabled'}>${esc(p.label)}${p.supported?'':' — not available here'}</option>`).join('');
+  const rec=v.status==='recording', paused=v.status==='paused', proc=v.status==='processing', done=v.status==='done';
+  const micIcon='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>';
+  let body='';
+  if(done){
+    const pr=v.parsed||{}; const kv=(k,val)=>`<div class="kv"><b>${k}</b><span>${esc(val||'—')}</span></div>`;
+    body=`<div class="v-tx">${esc(v.transcript)||'<span class="partial">No speech captured</span>'}</div>
+      <div class="v-parsed">${kv('Medicine',pr.name)}${kv('Potency',pr.potency)}${kv('Pack',pr.pack)}${kv('Qty',pr.qty)}${kv('Supplier',pr.supplier)}${kv('Expiry',pr.expiry)}</div>
+      <div class="v-btns"><button class="v-ghost" id="vAgain">↺ Record again</button><button class="v-go" id="vAdd">Add to review →</button></div>`;
+  } else {
+    const micCls=rec?'v-mic live':'v-mic';
+    const label= proc?'Transcribing…' : rec?'Listening… tap to stop' : paused?'Paused' : 'Tap to start recording';
+    const onclick = proc?'' : rec?'voiceStop()' : paused?'voiceResume()' : 'voiceStart()';
+    body=`<div class="v-prov"><select id="vProv" ${rec||proc?'disabled':''}>${opts}</select>
+        <div class="hint">Swap the engine anytime — Browser is on-device &amp; free; cloud engines need the backend transcribe proxy.</div></div>
+      <button class="${micCls}" ${onclick?`onclick="${onclick}"`:''} ${proc?'disabled':''}>${micIcon}</button>
+      <div class="v-time" id="vTime">${fmtTime(v.seconds)}</div>
+      <div class="v-state">${label}</div>
+      <canvas class="v-wave" id="vWave" width="420" height="58"></canvas>
+      <div class="v-tx" id="vTx">${v.transcript?esc(v.transcript):'<span class="partial">Say e.g. “five bottles of Arnica Montana mother tincture 100 ml from SBL expiry March 2030”.</span>'}</div>
+      ${(rec||paused)?`<div class="v-btns">${rec?'<button class="v-ghost" id="vPause">❚❚ Pause</button>':'<button class="v-ghost" id="vResume">▶ Resume</button>'}<button class="v-go" id="vStop2">■ Stop &amp; read</button></div>`:''}`;
+  }
+  main.innerHTML=`<div class="hero"><h1>Voice entry</h1><p>Speak the medicine, quantity, pack, supplier and expiry. Lens turns it into a review row.</p></div><div class="v-wrap">${body}</div>`;
+  const prov=document.getElementById('vProv'); if(prov) prov.addEventListener('change',e=>{ VoiceLens.use(e.target.value); });
+  const bind=(id,fn)=>{ const el=document.getElementById(id); if(el) el.addEventListener('click',fn); };
+  bind('vPause',voicePause); bind('vResume',voiceResume); bind('vStop2',voiceStop);
+  bind('vAgain',()=>{ S.voice={status:'idle',transcript:'',partial:'',seconds:0,parsed:null,provider:VoiceLens.activeId}; renderVoice(); });
+  bind('vAdd',voiceAdd);
+  dock.innerHTML=`<div class="dock-inner"><button class="btn ghost" id="vBack" style="flex:0 0 auto;width:auto;padding:14px 16px">← Back</button></div>`;
+  const bk=document.getElementById('vBack'); if(bk) bk.addEventListener('click',voiceBack);
+  if(rec) paintTranscript();
 }
 
 /* ---- boot ---- */
