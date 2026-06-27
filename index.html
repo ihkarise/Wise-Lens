@@ -220,29 +220,6 @@ main{flex:1;padding:18px 16px 130px}
 .hidden{display:none!important}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 :focus-visible{outline:2px solid var(--wh-blue);outline-offset:2px}
-
-/* ============ inventory search ============ */
-.inv-search{margin-top:12px}
-.inv-search>label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);display:block;margin-bottom:4px}
-.inv-search-wrap{position:relative;display:flex;align-items:center}
-.inv-input{width:100%;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:9px 34px 9px 10px;font-size:13.5px;color:var(--ink)}
-.inv-input::placeholder{color:var(--faint)}
-.inv-input:focus{outline:none;border-color:var(--wh-blue);background:#fff}
-.inv-input.matched{border-color:var(--ok);background:var(--ok-bg)}
-.inv-x{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:26px;height:26px;border-radius:6px;display:none;place-items:center;color:var(--muted);font-size:16px;line-height:1}
-.inv-x.show{display:grid}
-.inv-x:active{background:var(--line);color:var(--bad)}
-#invDd{position:fixed;z-index:35;background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 8px 28px rgba(19,42,92,.16);max-height:240px;overflow-y:auto;display:none;min-width:260px;max-width:calc(100vw - 32px);-webkit-overflow-scrolling:touch}
-#invDd.open{display:block}
-.inv-row{padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--line);transition:background .08s}
-.inv-row:last-child{border-bottom:none}
-.inv-row:active,.inv-row.hl{background:var(--info-bg)}
-.inv-row .code{font-family:'JetBrains Mono';font-weight:600;font-size:12.5px;color:var(--wh-blue)}
-.inv-row .nm{font-size:13.5px;font-weight:500;margin-top:1px;color:var(--ink);word-break:break-word}
-.inv-row .det{font-size:11px;color:var(--muted);margin-top:2px}
-.inv-row .det b{color:var(--ink);font-weight:600}
-.inv-none{padding:16px 12px;text-align:center;color:var(--faint);font-size:13px}
-mark{background:rgba(42,60,120,.12);color:inherit;border-radius:2px;padding:0 1px}
 </style>
 </head>
 <body>
@@ -513,7 +490,6 @@ function makeRow(line, cover, origin, inventory){
   const m = matchInventory(r, inventory);
   if(m){ r.matchId=m.id; r.matchName=m.name; r.action='receive'; }
   else { r.codeFamily=resolvePrefix(r.category, r.pack, r.potency); r.action='add'; }
-  r._matchItem = m || null;
   // a cover-only row with no qty can't be received meaningfully — flag low
   if(origin==='cover' && r.action==='receive' && r.qty==='') r.confidence='med';
   return r;
@@ -615,7 +591,7 @@ async function stageBatch(){
     OfflineQueue.enqueue({ rows, session:S.session });
     if(S.session){ S.session.status='queued'; }
     IntakeCore.clearDraft(); S.stagedCounts=counts(); S.queued=true; S.screen='done'; render();
-    toast('Saved offline — will upload when you're back online');
+    toast('Saved offline — will upload when you’re back online');
     return;
   }
 
@@ -831,13 +807,6 @@ function cardHtml(r){
       ${r.expiry?`<span>Exp <b>${esc(r.expiry)}</b></span>`:''}
     </div>
     <div class="card-body">
-      <div class="inv-search">
-        <label>Inventory match</label>
-        <div class="inv-search-wrap">
-          <input class="inv-input${r._matchItem?' matched':''}" type="text" placeholder="Search by code, name, potency…" value="${r._matchItem?esc(r._matchItem.id+' · '+r._matchItem.name):''}" autocomplete="off" spellcheck="false">
-          <button class="inv-x${r._matchItem?' show':''}" type="button" aria-label="Clear match">×</button>
-        </div>
-      </div>
       <div class="fgrid">
         <div class="f" ${fconf('pack')}><label>Pack size</label><input data-f="pack" value="${esc(r.pack)}"></div>
         <div class="f" ${fconf('potency')}><label>Potency</label><input data-f="potency" class="mono" value="${esc(r.potency)}"></div>
@@ -876,163 +845,7 @@ function bindCards(root){
         renderReview();
       });
     });
-    initInvSearch(card, r);
   });
-}
-
-/* ===================================================================
-   INVENTORY SEARCH DROPDOWN
-   =================================================================== */
-var _invDd=null, _invSt={results:[],hlIdx:-1};
-
-function ensureInvDd(){
-  if(_invDd) return _invDd;
-  _invDd=document.createElement('div');
-  _invDd.id='invDd';
-  document.body.appendChild(_invDd);
-  document.addEventListener('mousedown',function(e){
-    if(_invDd.classList.contains('open')&&!_invDd.contains(e.target)&&!e.target.closest('.inv-search-wrap')) closeInvDd();
-  });
-  return _invDd;
-}
-function closeInvDd(){ if(_invDd) _invDd.classList.remove('open'); _invSt.hlIdx=-1; }
-
-function initInvSearch(card,r){
-  var wrap=card.querySelector('.inv-search-wrap');
-  if(!wrap) return;
-  var inp=wrap.querySelector('.inv-input');
-  var xBtn=wrap.querySelector('.inv-x');
-
-  inp.addEventListener('focus',function(){
-    if(r._matchItem) inp.select();
-  });
-  inp.addEventListener('input',function(){
-    var q=inp.value.trim();
-    inp.classList.remove('matched');
-    if(xBtn) xBtn.classList.remove('show');
-    if(!q){ closeInvDd(); return; }
-    showInvResults(inp,filterInv(q),q);
-  });
-  inp.addEventListener('keydown',function(e){ onInvKey(e,inp,r); });
-  inp.addEventListener('blur',function(){
-    setTimeout(function(){ closeInvDd(); updateInvDisp(inp,xBtn,r); },180);
-  });
-  if(xBtn) xBtn.addEventListener('mousedown',function(e){ e.preventDefault(); clearInvMatch(r); });
-}
-
-function updateInvDisp(inp,xBtn,r){
-  if(r._matchItem){
-    inp.value=r._matchItem.id+' · '+r._matchItem.name;
-    inp.classList.add('matched');
-    if(xBtn) xBtn.classList.add('show');
-  } else {
-    inp.value='';
-    inp.classList.remove('matched');
-    if(xBtn) xBtn.classList.remove('show');
-  }
-}
-
-function filterInv(q){
-  if(!S.inventory||!S.inventory.length) return [];
-  if(!q) return S.inventory.length<=60?S.inventory.slice(0,60):[];
-  var up=q.toUpperCase(), terms=up.split(/\s+/).filter(Boolean);
-  return S.inventory.filter(function(it){
-    var hay=(it.id+' '+it.name+' '+(it.potency||'')+' '+(it.pack||'')).toUpperCase();
-    return terms.every(function(t){ return hay.indexOf(t)>=0; });
-  }).slice(0,30);
-}
-
-function showInvResults(inp,results,query){
-  var dd=ensureInvDd();
-  _invSt.results=results; _invSt.hlIdx=-1;
-  if(!results.length){
-    dd.innerHTML='<div class="inv-none">No matching medicines found</div>';
-  } else {
-    dd.innerHTML=results.map(function(it,i){
-      return '<div class="inv-row" data-idx="'+i+'">'+
-        '<div class="code">'+hlText(it.id,query)+'</div>'+
-        '<div class="nm">'+hlText(it.name,query)+'</div>'+
-        '<div class="det"><b>'+esc(it.potency||'')+'</b> · '+esc(it.pack||'')+'</div></div>';
-    }).join('');
-  }
-  var rect=inp.getBoundingClientRect();
-  var top=rect.bottom+4, left=rect.left;
-  if(top+240>window.innerHeight-20) top=rect.top-244;
-  dd.style.top=top+'px';
-  dd.style.left=Math.max(8,Math.min(left,window.innerWidth-280))+'px';
-  dd.style.width=Math.max(260,Math.min(rect.width,window.innerWidth-32))+'px';
-  dd.classList.add('open');
-
-  dd.querySelectorAll('.inv-row').forEach(function(row){
-    row.addEventListener('mousedown',function(e){
-      e.preventDefault();
-      var item=_invSt.results[+row.dataset.idx];
-      if(item){
-        var c=inp.closest('.card'), rid=c?c.dataset.id:'';
-        var r=S.rows.find(function(x){ return x.id===rid; });
-        if(r) selectInvMatch(r,item);
-      }
-    });
-    row.addEventListener('mouseenter',function(){ _invSt.hlIdx=+row.dataset.idx; paintHl(); });
-  });
-}
-
-function paintHl(){
-  if(!_invDd) return;
-  _invDd.querySelectorAll('.inv-row').forEach(function(row,i){
-    row.classList.toggle('hl',i===_invSt.hlIdx);
-  });
-  var h=_invDd.querySelector('.inv-row.hl');
-  if(h) h.scrollIntoView({block:'nearest'});
-}
-
-function onInvKey(e,inp,r){
-  var dd=_invDd;
-  if(!dd||!dd.classList.contains('open')){
-    if(e.key==='ArrowDown'&&S.inventory&&S.inventory.length){ showInvResults(inp,filterInv(''),''); e.preventDefault(); }
-    return;
-  }
-  var n=_invSt.results.length;
-  if(e.key==='ArrowDown'){ e.preventDefault(); _invSt.hlIdx=(_invSt.hlIdx+1)%n; paintHl(); }
-  else if(e.key==='ArrowUp'){ e.preventDefault(); _invSt.hlIdx=(_invSt.hlIdx-1+n)%n; paintHl(); }
-  else if(e.key==='Enter'){ e.preventDefault(); if(_invSt.hlIdx>=0&&_invSt.results[_invSt.hlIdx]) selectInvMatch(r,_invSt.results[_invSt.hlIdx]); }
-  else if(e.key==='Escape'){ e.preventDefault(); closeInvDd(); inp.blur(); }
-  else if(e.key==='Tab') closeInvDd();
-}
-
-function selectInvMatch(r,item){
-  closeInvDd();
-  r.matchId=item.id; r.matchName=item.name; r._matchItem=item;
-  r.name=item.name; r.potency=item.potency; r.pack=item.pack; r.category=item.category;
-  r.action='receive'; r.codeFamily='';
-  refreshCard(r); refreshSelBar(); scheduleSave();
-}
-
-function clearInvMatch(r){
-  closeInvDd();
-  r.matchId=''; r.matchName=''; r._matchItem=null;
-  r.action='add'; r.codeFamily=resolvePrefix(r.category,r.pack,r.potency);
-  refreshCard(r); refreshSelBar(); scheduleSave();
-}
-
-function refreshCard(r){
-  var old=document.querySelector('.card[data-id="'+r.id+'"]');
-  if(!old) return;
-  var wasOpen=old.classList.contains('open');
-  var tmp=document.createElement('div');
-  tmp.innerHTML=cardHtml(r);
-  var fresh=tmp.firstElementChild;
-  if(wasOpen) fresh.classList.add('open');
-  old.replaceWith(fresh);
-  bindCards(fresh);
-}
-
-function hlText(text,q){
-  if(!q) return esc(text);
-  var s=String(text), u=s.toUpperCase(), first=q.toUpperCase().split(/\s+/)[0];
-  var i=u.indexOf(first);
-  if(i<0) return esc(s);
-  return esc(s.slice(0,i))+'<mark>'+esc(s.slice(i,i+first.length))+'</mark>'+esc(s.slice(i+first.length));
 }
 
 /* ---- done ---- */
@@ -1152,8 +965,8 @@ function demoExtract(kind){
      label         string
      needsKey      boolean   (cloud engines proxy their key server-side)
      isSupported() boolean
-     start(h)      begin; emits via h.onpartial / h.onfinal / h.onerror / h.onstart
-                   / h.onend
+     start(h)      begin; emits via h.onpartial / h.onfinal / h.onstart
+                   / h.onerror / h.onend
      pause()/resume()/stop()/abort()
    Default: Web Speech API (on-device, free). Whisper / OpenAI / Gemini /
    Google / Azure register as CloudSTTProvider adapters that record audio
